@@ -7,6 +7,7 @@ const DEFAULTS = {
   styleProductionEntries: [],
   productionEntries: [],
   acceptanceEntries: [],
+  dispatchEntries: [],
   settings: { sizes: DEFAULT_SIZE_LIST }
 };
 const CLOUD_REFRESH_MS = 15000;
@@ -46,22 +47,34 @@ const els = {
   acceptanceStyleSelect: $("acceptanceStyleSelect"),
   acceptanceSizeRows: $("acceptanceSizeRows"),
   acceptanceEntriesTable: $("acceptanceEntriesTable"),
+  dispatchForm: $("dispatchForm"),
+  dispatchStyleSelect: $("dispatchStyleSelect"),
+  dispatchSizeRows: $("dispatchSizeRows"),
+  dispatchEntriesTable: $("dispatchEntriesTable"),
   dashboardStats: $("dashboardStats"),
   styleBillingTable: $("styleBillingTable"),
   workerBillingTable: $("workerBillingTable"),
   styleAmountReportTable: $("styleAmountReportTable"),
   reconciliationTable: $("reconciliationTable"),
+  cuttingReportHead: $("cuttingReportHead"),
+  cuttingReportTable: $("cuttingReportTable"),
+  dispatchReportTable: $("dispatchReportTable"),
   operationCostTable: $("operationCostTable"),
   reportDate: $("reportDate"),
   clearReportDate: $("clearReportDate"),
   downloadStyleAmountReport: $("downloadStyleAmountReport"),
+  downloadCuttingReport: $("downloadCuttingReport"),
+  downloadFlowReport: $("downloadFlowReport"),
   exportBtn: $("exportBtn"),
   importInput: $("importInput"),
   styleImportInput: $("styleImportInput"),
   cuttingImportInput: $("cuttingImportInput"),
   productionImportInput: $("productionImportInput"),
   storageModeBadge: $("storageModeBadge"),
-  syncStatusText: $("syncStatusText")
+  syncStatusText: $("syncStatusText"),
+  imagePreviewModal: $("imagePreviewModal"),
+  imagePreviewModalImg: $("imagePreviewModalImg"),
+  closeImagePreview: $("closeImagePreview")
 };
 
 init().catch((error) => {
@@ -115,6 +128,7 @@ function buildSizeInputs() {
       <label>Accepted Qty<input type="number" min="0" name="accepted_${size}" placeholder="0"></label>
       <label>Rejected Qty<input type="number" min="0" name="rejected_${size}" placeholder="0"></label>
     </div>`).join("");
+  els.dispatchSizeRows.innerHTML = sizes.map((size) => sizeCard(size, `dispatch_${size}`)).join("");
 }
 
 function sizeCard(size, name) {
@@ -127,6 +141,7 @@ function setToday() {
   els.styleProductionForm.date.value = els.styleProductionForm.date.value || today;
   els.productionForm.date.value = els.productionForm.date.value || today;
   els.acceptanceForm.date.value = els.acceptanceForm.date.value || today;
+  els.dispatchForm.date.value = els.dispatchForm.date.value || today;
 }
 
 function buildSizeSelect() {
@@ -139,10 +154,13 @@ function bindForms() {
     if (e.target.classList.contains("remove-operation")) e.target.closest(".operation-rate-row").remove();
   });
   els.styleCards.addEventListener("click", handleStyleCardAction);
+  els.cuttingReportTable?.addEventListener("click", handleImagePreviewAction);
+  els.dispatchReportTable?.addEventListener("click", handleImagePreviewAction);
   els.cuttingEntriesTable.addEventListener("click", handleCuttingTableAction);
   els.styleProductionEntriesTable.addEventListener("click", handleStyleProductionTableAction);
   els.productionEntriesTable.addEventListener("click", handleProductionTableAction);
   els.acceptanceEntriesTable.addEventListener("click", handleAcceptanceTableAction);
+  els.dispatchEntriesTable.addEventListener("click", handleDispatchTableAction);
   els.sizeSettingsForm.addEventListener("submit", saveSizes);
 
   els.styleForm.addEventListener("submit", saveStyle);
@@ -150,15 +168,24 @@ function bindForms() {
   els.styleProductionForm.addEventListener("submit", saveStyleProduction);
   els.productionForm.addEventListener("submit", saveProduction);
   els.acceptanceForm.addEventListener("submit", saveAcceptance);
+  els.dispatchForm.addEventListener("submit", saveDispatch);
   els.productionStyleSelect.addEventListener("change", renderOperationSelect);
   els.reportDate.addEventListener("change", renderReports);
   els.clearReportDate.addEventListener("click", clearReportDateFilter);
   els.downloadStyleAmountReport.addEventListener("click", downloadStyleAmountReport);
+  els.downloadCuttingReport.addEventListener("click", downloadCuttingReport);
+  els.downloadFlowReport.addEventListener("click", downloadFlowReport);
   els.exportBtn.addEventListener("click", exportData);
   els.importInput.addEventListener("change", importData);
   els.styleImportInput.addEventListener("change", importStylesCsv);
   els.cuttingImportInput.addEventListener("change", importCuttingCsv);
   els.productionImportInput.addEventListener("change", importProductionCsv);
+  els.closeImagePreview?.addEventListener("click", closeImagePreview);
+  els.imagePreviewModal?.addEventListener("click", (e) => {
+    if (e.target instanceof HTMLElement && e.target.dataset.closeImagePreview === "true") {
+      closeImagePreview();
+    }
+  });
 }
 async function saveStyle(e) {
   e.preventDefault();
@@ -189,6 +216,7 @@ async function saveStyle(e) {
     color,
     orderQty: num(f.get("orderQty")),
     cmtRate: num(f.get("cmtRate")),
+    serviceChargePct: num(f.get("serviceChargePct")),
     image: uploadedImage || imageValue || existingStyle?.image || "",
     notes: clean(f.get("notes")),
     operations
@@ -295,6 +323,25 @@ async function saveAcceptance(e) {
   await persistState();
 }
 
+async function saveDispatch(e) {
+  e.preventDefault();
+  const f = new FormData(els.dispatchForm);
+  const sizes = getSizes();
+  const entryId = els.dispatchForm.dataset.editId || uid();
+  const payload = {
+    id: entryId,
+    date: f.get("date"),
+    styleId: f.get("styleId"),
+    remarks: clean(f.get("remarks")),
+    quantities: Object.fromEntries(sizes.map((size) => [size, num(els.dispatchSizeRows.querySelector(`[name="dispatch_${size}"]`).value)]))
+  };
+  upsertEntry("dispatchEntries", payload, entryId);
+  delete els.dispatchForm.dataset.editId;
+  els.dispatchForm.reset();
+  setToday();
+  await persistState();
+}
+
 function render() {
   renderStyleSelects();
   renderOperationSelect();
@@ -303,12 +350,13 @@ function render() {
   renderStyleProduction();
   renderProduction();
   renderAcceptance();
+  renderDispatch();
   renderDashboard();
   renderReports();
 }
 
 function renderStyleSelects() {
-  [els.cuttingStyleSelect, els.styleProductionStyleSelect, els.productionStyleSelect, els.acceptanceStyleSelect].forEach((select) => {
+  [els.cuttingStyleSelect, els.styleProductionStyleSelect, els.productionStyleSelect, els.acceptanceStyleSelect, els.dispatchStyleSelect].forEach((select) => {
     const current = select.value;
     select.innerHTML = `<option value="">${state.styles.length ? "Select style" : "No style created"}</option>` +
       state.styles.map((s) => `<option value="${s.id}">${esc(styleLabel(s))}</option>`).join("");
@@ -327,12 +375,20 @@ function renderOperationSelect() {
 function renderStyles() {
   els.styleCards.innerHTML = state.styles.length ? state.styles.map((style) => `
     <article class="style-card">
-      ${style.image ? `<img class="style-thumb" src="${escAttr(style.image)}" alt="${escAttr(style.styleNumber)}">` : ""}
+      ${style.image ? `
+        <div class="style-media">
+          <img class="style-thumb" src="${escAttr(style.image)}" alt="${escAttr(style.styleNumber)}">
+          <div class="style-preview-meta">
+            <span class="chip">Full image available</span>
+            <button type="button" class="ghost small preview-link" data-action="preview-image" data-image-src="${escAttr(style.image)}" data-image-title="${escAttr(styleLabel(style))}">Preview Full Image</button>
+          </div>
+        </div>` : ""}
       <h4>${esc(style.styleNumber)}${style.styleName ? ` - ${esc(style.styleName)}` : ""}</h4>
       <p><strong>Buyer:</strong> ${esc(style.buyerName || "-")}</p>
       <p><strong>Color:</strong> ${esc(style.color || "-")}</p>
       <p><strong>Order Qty:</strong> ${fmtInt(style.orderQty || 0)}</p>
       <p><strong>Total CMT:</strong> Rs ${fmt(style.cmtRate)}</p>
+      <p><strong>Service Charge:</strong> ${fmt(style.serviceChargePct || 0)}%</p>
       <p><strong>Image:</strong> ${style.image ? "Uploaded" : "-"}</p>
       <div class="chip-row">${style.operations.map((o) => `<span class="chip">${esc(o.operationName)}: Rs ${fmt(o.rate)}</span>`).join("") || "<span class='chip'>No operations</span>"}</div>
       <div class="card-actions">
@@ -361,6 +417,11 @@ function renderAcceptance() {
     <tr><td>${esc(entry.date)}</td><td>${esc(styleLabel(byId(entry.styleId)))}</td><td>${fmtInt(entry.items.reduce((s, i) => s + i.accepted, 0))}</td><td>${fmtInt(entry.items.reduce((s, i) => s + i.rejected, 0))}</td><td>${esc(formatAcceptanceItems(entry.items))}</td><td>${esc(entry.remarks || "-")}</td><td><button type="button" class="ghost small" data-action="edit-acceptance" data-entry-id="${entry.id}">Edit</button></td></tr>`), 7, "No acceptance entries recorded.");
 }
 
+function renderDispatch() {
+  els.dispatchEntriesTable.innerHTML = rowsOrEmpty(state.dispatchEntries.slice().reverse().map((entry) => `
+    <tr><td>${esc(entry.date)}</td><td>${esc(styleLabel(byId(entry.styleId)))}</td><td>${fmtInt(sumObj(entry.quantities))}</td><td>${esc(formatQuantities(entry.quantities))}</td><td>${esc(entry.remarks || "-")}</td><td><button type="button" class="ghost small" data-action="edit-dispatch" data-entry-id="${entry.id}">Edit</button></td></tr>`), 6, "No dispatch entries recorded.");
+}
+
 function renderDashboard() {
   const totalBilling = styleBillingRows().reduce((s, r) => s + r.billing, 0);
   els.dashboardStats.innerHTML = [
@@ -380,30 +441,67 @@ function renderDashboard() {
 }
 
 function renderReports() {
+  renderCuttingReportHeader();
   const styleAmounts = styleBillingRows(getReportDateFilter());
   els.styleAmountReportTable.innerHTML = rowsOrEmpty(styleAmounts.map((r) => `
-    <tr><td>${esc(r.dateLabel)}</td><td>${esc(r.styleNumber)}</td><td>${esc(r.color || "-")}</td><td>${fmtInt(r.producedQty)}</td><td>Rs ${fmt(r.cmtRate)}</td><td>Rs ${fmt(r.billing)}</td></tr>`), 6, "No style amount report for the selected date.");
+    <tr><td>${esc(r.dateLabel)}</td><td>${esc(r.styleNumber)}</td><td>${esc(r.color || "-")}</td><td>${fmtInt(r.producedQty)}</td><td>Rs ${fmt(r.cmtRate)}</td><td>${fmt(r.serviceChargePct)}%</td><td>Rs ${fmt(r.serviceChargeAmount)}</td><td>Rs ${fmt(r.billing)}</td></tr>`), 8, "No style amount report for the selected date.");
 
   const reconciliation = reconciliationRows(getReportDateFilter());
   els.reconciliationTable.innerHTML = rowsOrEmpty(reconciliation.map((r) => `
     <tr><td>${esc(r.styleNumber)}</td><td>${fmtInt(r.cutQty)}</td><td>${fmtInt(r.producedQty)}</td><td>${fmtInt(r.acceptedQty)}</td><td>${fmtInt(r.rejectedQty)}</td><td class="${r.balance < 0 ? "text-danger" : "text-success"}">${fmtInt(r.balance)}</td></tr>`), 6, "No reconciliation data yet.");
+
+  const cuttingRows = cuttingReportRows(getReportDateFilter());
+  els.cuttingReportTable.innerHTML = rowsOrEmpty(cuttingRows.map((r) => `
+    <tr>
+      <td>${esc(r.date)}</td>
+      <td>${r.image ? `<img class="report-thumb" src="${escAttr(r.image)}" alt="${escAttr(r.styleNumber)}" data-action="preview-image" data-image-src="${escAttr(r.image)}" data-image-title="${escAttr(r.styleNumber)}">` : "-"}</td>
+      <td>${esc(r.styleNumber)}</td>
+      <td>${esc(r.color || "-")}</td>
+      ${getSizes().map((size) => `<td>${fmtInt(r.quantities[size] || 0)}</td>`).join("")}
+      <td>${fmtInt(r.totalQty)}</td>
+      <td>${esc(r.remarks || "-")}</td>
+    </tr>`), getSizes().length + 6, "No cutting report for the selected date.");
+
+  const dispatchRows = dispatchReportRows(getReportDateFilter());
+  els.dispatchReportTable.innerHTML = rowsOrEmpty(dispatchRows.map((r) => `
+    <tr>
+      <td>${r.image ? `<img class="report-thumb" src="${escAttr(r.image)}" alt="${escAttr(r.styleNumber)}" data-action="preview-image" data-image-src="${escAttr(r.image)}" data-image-title="${escAttr(r.styleNumber)}">` : "-"}</td>
+      <td>${esc(r.styleNumber)}</td>
+      <td>${esc(r.color || "-")}</td>
+      <td>${esc(r.size)}</td>
+      <td>${fmtInt(r.cutQty)}</td>
+      <td>${fmtInt(r.makeQty)}</td>
+      <td>${fmtInt(r.dispatchQty)}</td>
+      <td>Rs ${fmt(r.amount)}</td>
+      <td class="${r.balance < 0 ? "text-danger" : "text-success"}">${fmtInt(r.balance)}</td>
+    </tr>`), 9, "No size-wise dispatch details yet.");
 
   const ops = operationCostRows(getReportDateFilter());
   els.operationCostTable.innerHTML = rowsOrEmpty(ops.map((r) => `
     <tr><td>${esc(r.styleNumber)}</td><td>${esc(r.operationName)}</td><td>${fmtInt(r.quantity)}</td><td>Rs ${fmt(r.rate)}</td><td>Rs ${fmt(r.amount)}</td></tr>`), 5, "No operation costing yet.");
 }
 
+function renderCuttingReportHeader() {
+  if (!els.cuttingReportHead) return;
+  els.cuttingReportHead.innerHTML = `<tr><th>Date</th><th>Photo</th><th>Style</th><th>Colour</th>${getSizes().map((size) => `<th>${esc(size)}</th>`).join("")}<th>Total Qty</th><th>Remarks</th></tr>`;
+}
+
 function styleBillingRows(reportDate = "") {
   return state.styles.map((style) => {
     const entries = state.styleProductionEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportDate));
     const producedQty = entries.reduce((s, e) => s + sumObj(e.quantities), 0);
+    const baseAmount = producedQty * num(style.cmtRate);
+    const serviceChargePct = num(style.serviceChargePct);
+    const serviceChargeAmount = baseAmount * serviceChargePct / 100;
     return {
       styleNumber: style.styleNumber,
       color: style.color,
       producedQty,
       acceptedQty: producedQty,
       cmtRate: num(style.cmtRate),
-      billing: producedQty * num(style.cmtRate),
+      serviceChargePct,
+      serviceChargeAmount,
+      billing: baseAmount + serviceChargeAmount,
       dateLabel: reportDate || "All Dates"
     };
   }).filter((row) => row.producedQty > 0 || !reportDate);
@@ -441,6 +539,58 @@ function operationCostRows(reportDate = "") {
     map.set(key, row);
   });
   return [...map.values()].sort((a, b) => a.styleNumber.localeCompare(b.styleNumber));
+}
+
+function cuttingReportRows(reportDate = "") {
+  return state.cuttingEntries
+    .filter((entry) => matchesDate(entry.date, reportDate))
+    .slice()
+    .sort((a, b) => clean(b.date).localeCompare(clean(a.date)))
+    .map((entry) => {
+      const style = byId(entry.styleId);
+      return {
+        date: entry.date,
+        image: style?.image || "",
+        styleNumber: style?.styleNumber || "-",
+        color: style?.color || "",
+        quantities: getSizeQuantities(entry.quantities),
+        totalQty: sumObj(entry.quantities),
+        sizeWise: formatQuantities(entry.quantities),
+        remarks: entry.remarks || ""
+      };
+    });
+}
+
+function dispatchReportRows(reportDate = "") {
+  const rows = [];
+  state.styles.forEach((style) => {
+    getSizes().forEach((size) => {
+      const cutQty = state.cuttingEntries
+        .filter((entry) => entry.styleId === style.id && matchesDate(entry.date, reportDate))
+        .reduce((sum, entry) => sum + num(entry.quantities?.[size]), 0);
+      const makeQty = state.styleProductionEntries
+        .filter((entry) => entry.styleId === style.id && matchesDate(entry.date, reportDate))
+        .reduce((sum, entry) => sum + num(entry.quantities?.[size]), 0);
+      const dispatchQty = state.dispatchEntries
+        .filter((entry) => entry.styleId === style.id && matchesDate(entry.date, reportDate))
+        .reduce((sum, entry) => sum + num(entry.quantities?.[size]), 0);
+      if (!cutQty && !makeQty && !dispatchQty && reportDate) return;
+      if (!cutQty && !makeQty && !dispatchQty) return;
+      const amount = (makeQty * num(style.cmtRate)) + ((makeQty * num(style.cmtRate) * num(style.serviceChargePct)) / 100);
+      rows.push({
+        styleNumber: style.styleNumber,
+        color: style.color,
+        image: style.image || "",
+        size,
+        cutQty,
+        makeQty,
+        dispatchQty,
+        amount,
+        balance: cutQty - dispatchQty
+      });
+    });
+  });
+  return rows.sort((a, b) => `${a.styleNumber}${a.color}${a.size}`.localeCompare(`${b.styleNumber}${b.color}${b.size}`));
 }
 
 function exportData() {
@@ -491,6 +641,7 @@ async function importStylesCsv(e) {
         color,
         orderQty: num(row.orderQty),
         cmtRate: num(row.cmtRate),
+        serviceChargePct: num(row.serviceChargePct),
         image: clean(row.image),
         notes: clean(row.notes),
         operations
@@ -623,6 +774,7 @@ function handleStyleCardAction(e) {
   const styleId = button.dataset.styleId;
   if (button.dataset.action === "edit-style") editStyle(styleId);
   if (button.dataset.action === "delete-style") void deleteStyle(styleId);
+  if (button.dataset.action === "preview-image") openImagePreview(button.dataset.imageSrc, button.dataset.imageTitle);
 }
 
 function editStyle(styleId) {
@@ -635,6 +787,7 @@ function editStyle(styleId) {
   els.styleForm.color.value = style.color || "";
   els.styleForm.orderQty.value = style.orderQty || "";
   els.styleForm.cmtRate.value = style.cmtRate || "";
+  els.styleForm.serviceChargePct.value = style.serviceChargePct || "";
   els.styleForm.image.value = style.image && !style.image.startsWith("data:") ? style.image : "";
   els.styleForm.querySelector('[name="imageFile"]').value = "";
   els.styleForm.notes.value = style.notes || "";
@@ -667,7 +820,8 @@ function hasStyleTransactions(styleId) {
   return state.cuttingEntries.some((e) => e.styleId === styleId)
     || state.styleProductionEntries.some((e) => e.styleId === styleId)
     || state.productionEntries.some((e) => e.styleId === styleId)
-    || state.acceptanceEntries.some((e) => e.styleId === styleId);
+    || state.acceptanceEntries.some((e) => e.styleId === styleId)
+    || state.dispatchEntries.some((e) => e.styleId === styleId);
 }
 
 function handleCuttingTableAction(e) {
@@ -692,6 +846,12 @@ function handleAcceptanceTableAction(e) {
   const button = e.target.closest("[data-action='edit-acceptance']");
   if (!button) return;
   editAcceptance(button.dataset.entryId);
+}
+
+function handleDispatchTableAction(e) {
+  const button = e.target.closest("[data-action='edit-dispatch']");
+  if (!button) return;
+  editDispatch(button.dataset.entryId);
 }
 
 function editCutting(entryId) {
@@ -744,6 +904,17 @@ function editAcceptance(entryId) {
     if (rejectedInput) rejectedInput.value = item.rejected || "";
   });
   els.acceptanceForm.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function editDispatch(entryId) {
+  const entry = state.dispatchEntries.find((item) => item.id === entryId);
+  if (!entry) return;
+  els.dispatchForm.dataset.editId = entry.id;
+  els.dispatchForm.date.value = entry.date || "";
+  els.dispatchForm.styleId.value = entry.styleId || "";
+  els.dispatchForm.remarks.value = entry.remarks || "";
+  fillSizeQuantities(els.dispatchSizeRows, "dispatch_", entry.quantities);
+  els.dispatchForm.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function fillSizeQuantities(container, prefix, quantities = {}) {
@@ -800,6 +971,10 @@ function getSizes() {
   return (state.settings?.sizes?.length ? state.settings.sizes : DEFAULT_SIZE_LIST).map((size) => clean(size)).filter(Boolean);
 }
 
+function getSizeQuantities(quantities = {}) {
+  return Object.fromEntries(getSizes().map((size) => [size, num(quantities?.[size])]));
+}
+
 function parseSizeList(value) {
   return [...new Set(String(value || "").split(",").map((item) => clean(item)).filter(Boolean))];
 }
@@ -810,11 +985,18 @@ function normalizeState() {
   if (!Array.isArray(state.settings.sizes) || !state.settings.sizes.length) {
     state.settings.sizes = [...DEFAULT_SIZE_LIST];
   }
-  state.styles = (state.styles || []).map((style) => ({ ...style, orderQty: num(style.orderQty), operations: Array.isArray(style.operations) ? style.operations : [] }));
+  state.styles = (state.styles || []).map((style) => ({
+    ...style,
+    orderQty: num(style.orderQty),
+    cmtRate: num(style.cmtRate),
+    serviceChargePct: num(style.serviceChargePct),
+    operations: Array.isArray(style.operations) ? style.operations : []
+  }));
   state.cuttingEntries = Array.isArray(state.cuttingEntries) ? state.cuttingEntries : [];
   state.styleProductionEntries = Array.isArray(state.styleProductionEntries) ? state.styleProductionEntries : [];
   state.productionEntries = Array.isArray(state.productionEntries) ? state.productionEntries : [];
   state.acceptanceEntries = Array.isArray(state.acceptanceEntries) ? state.acceptanceEntries : [];
+  state.dispatchEntries = Array.isArray(state.dispatchEntries) ? state.dispatchEntries : [];
 }
 
 function getReportDateFilter() {
@@ -838,13 +1020,179 @@ function downloadStyleAmountReport() {
     return;
   }
   const csv = [
-    ["dateFilter", "styleNumber", "color", "producedQty", "cmtRate", "amount"].join(","),
-    ...rows.map((row) => [csvValue(row.dateLabel), csvValue(row.styleNumber), csvValue(row.color || ""), row.producedQty, row.cmtRate, row.billing].join(","))
+    ["dateFilter", "styleNumber", "color", "producedQty", "cmtRate", "serviceChargePct", "serviceChargeAmount", "totalAmount"].join(","),
+    ...rows.map((row) => [csvValue(row.dateLabel), csvValue(row.styleNumber), csvValue(row.color || ""), row.producedQty, row.cmtRate, row.serviceChargePct, row.serviceChargeAmount, row.billing].join(","))
   ].join("\n");
   downloadTextFile(`style-amount-report-${reportDate || "all-dates"}.csv`, csv, "text/csv");
 }
 
-function downloadTextFile(filename, content, type) {
+async function downloadCuttingReport() {
+  const reportDate = getReportDateFilter();
+  const rows = cuttingReportRows(reportDate);
+  if (!rows.length) {
+    alert("No cutting report found for the selected date.");
+    return;
+  }
+  const workbook = createWorkbookOrAlert();
+  if (!workbook) return;
+  const sheet = workbook.addWorksheet("Cutting Report");
+  const sizeColumns = getSizes();
+  sheet.columns = [
+    { header: "Date", key: "date", width: 14 },
+    { header: "Photo", key: "photo", width: 16 },
+    { header: "Style", key: "styleNumber", width: 18 },
+    { header: "Colour", key: "color", width: 16 },
+    ...sizeColumns.map((size) => ({ header: size, key: `size_${size}`, width: 10 })),
+    { header: "Total Qty", key: "totalQty", width: 12 },
+    { header: "Remarks", key: "remarks", width: 24 }
+  ];
+  styleWorksheetHeader(sheet);
+  for (const row of rows) {
+    const excelRow = sheet.addRow({
+      date: row.date,
+      styleNumber: row.styleNumber,
+      color: row.color || "",
+      ...Object.fromEntries(sizeColumns.map((size) => [`size_${size}`, row.quantities[size] || 0])),
+      totalQty: row.totalQty,
+      remarks: row.remarks || ""
+    });
+    excelRow.height = 62;
+    await addWorksheetImage(sheet, row.image, excelRow.number, 2);
+  }
+  finalizeWorksheet(sheet);
+  await downloadWorkbook(`cutting-report-${reportDate || "all-dates"}.xlsx`, workbook);
+}
+
+async function downloadFlowReport() {
+  const reportDate = getReportDateFilter();
+  const rows = dispatchReportRows(reportDate);
+  if (!rows.length) {
+    alert("No cut-make-dispatch report found for the selected date.");
+    return;
+  }
+  const workbook = createWorkbookOrAlert();
+  if (!workbook) return;
+  const sheet = workbook.addWorksheet("Cut Make Dispatch");
+  sheet.columns = [
+    { header: "Photo", key: "photo", width: 16 },
+    { header: "Style", key: "styleNumber", width: 18 },
+    { header: "Colour", key: "color", width: 16 },
+    { header: "Size", key: "size", width: 10 },
+    { header: "Cut Qty", key: "cutQty", width: 11 },
+    { header: "Make Qty", key: "makeQty", width: 11 },
+    { header: "Dispatch Qty", key: "dispatchQty", width: 13 },
+    { header: "Amount", key: "amount", width: 14 },
+    { header: "Balance", key: "balance", width: 11 }
+  ];
+  styleWorksheetHeader(sheet);
+  for (const row of rows) {
+    const excelRow = sheet.addRow({
+      styleNumber: row.styleNumber,
+      color: row.color || "",
+      size: row.size,
+      cutQty: row.cutQty,
+      makeQty: row.makeQty,
+      dispatchQty: row.dispatchQty,
+      amount: row.amount,
+      balance: row.balance
+    });
+    excelRow.height = 62;
+    await addWorksheetImage(sheet, row.image, excelRow.number, 1);
+  }
+  finalizeWorksheet(sheet);
+  await downloadWorkbook(`cut-make-dispatch-${reportDate || "all-dates"}.xlsx`, workbook);
+}
+
+function handleImagePreviewAction(e) {
+  const trigger = e.target.closest("[data-action='preview-image']");
+  if (!trigger) return;
+  openImagePreview(trigger.dataset.imageSrc, trigger.dataset.imageTitle);
+}
+
+function openImagePreview(src, title = "Style Preview") {
+  if (!src || !els.imagePreviewModal || !els.imagePreviewModalImg) return;
+  els.imagePreviewModalImg.src = src;
+  els.imagePreviewModalImg.alt = title;
+  const titleEl = $("imagePreviewTitle");
+  if (titleEl) titleEl.textContent = title;
+  els.imagePreviewModal.hidden = false;
+}
+
+function closeImagePreview() {
+  if (!els.imagePreviewModal || !els.imagePreviewModalImg) return;
+  els.imagePreviewModal.hidden = true;
+  els.imagePreviewModalImg.removeAttribute("src");
+}
+
+function createWorkbookOrAlert() {
+  if (!window.ExcelJS?.Workbook) {
+    alert("XLSX export library could not load. Please refresh and try again.");
+    return null;
+  }
+  const workbook = new window.ExcelJS.Workbook();
+  workbook.creator = "Piece Rate Calculator";
+  workbook.created = new Date();
+  return workbook;
+}
+
+function styleWorksheetHeader(sheet) {
+  const headerRow = sheet.getRow(1);
+  headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
+  headerRow.alignment = { vertical: "middle", horizontal: "center" };
+  headerRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF8F3B20" } };
+  headerRow.height = 24;
+}
+
+function finalizeWorksheet(sheet) {
+  sheet.views = [{ state: "frozen", ySplit: 1 }];
+  sheet.eachRow((row) => {
+    row.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+  });
+}
+
+async function addWorksheetImage(sheet, source, rowNumber, columnNumber) {
+  const imageData = await imageSourceToBase64(source);
+  if (!imageData) return;
+  const extension = imageData.startsWith("data:image/png") ? "png" : "jpeg";
+  const imageId = sheet.workbook.addImage({
+    base64: imageData,
+    extension
+  });
+  sheet.addImage(imageId, {
+    tl: { col: columnNumber - 1 + 0.15, row: rowNumber - 1 + 0.15 },
+    ext: { width: 52, height: 52 }
+  });
+}
+
+async function imageSourceToBase64(source) {
+  const value = clean(source);
+  if (!value) return "";
+  if (value.startsWith("data:image/")) return value;
+  try {
+    const response = await fetch(value);
+    if (!response.ok) return "";
+    const blob = await response.blob();
+    return await blobToDataUrl(blob);
+  } catch {
+    return "";
+  }
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Could not read blob"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function downloadWorkbook(filename, workbook) {
+  const buffer = await workbook.xlsx.writeBuffer();
+  downloadBlob(filename, buffer, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+}
+
+function downloadBlob(filename, content, type) {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -852,6 +1200,10 @@ function downloadTextFile(filename, content, type) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function downloadTextFile(filename, content, type) {
+  downloadBlob(filename, content, type);
 }
 
 function csvValue(value) {

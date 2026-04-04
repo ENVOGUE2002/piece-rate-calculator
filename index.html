@@ -6,6 +6,7 @@
   <title>Piece Rate Calculator</title>
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script src="config.js"></script>
 </head>
 <body>
@@ -21,6 +22,7 @@
         <button class="nav-link" data-tab="cutting">Cutting Entry</button>
         <button class="nav-link" data-tab="production">Production Entry</button>
         <button class="nav-link" data-tab="acceptance">Acceptance Entry</button>
+        <button class="nav-link" data-tab="dispatch">Dispatch Entry</button>
         <button class="nav-link" data-tab="reports">Reports</button>
       </nav>
       <div class="sidebar-card">
@@ -87,6 +89,7 @@
               <label>Color<input type="text" name="color"></label>
               <label>Order Qty<input type="number" name="orderQty" min="0" step="1" placeholder="0"></label>
               <label>Total CMT Rate (Rs)<input type="number" name="cmtRate" min="0" step="0.01" required></label>
+              <label>Service Charge (%)<input type="number" name="serviceChargePct" min="0" step="0.01" placeholder="0"></label>
               <label>Image URL or file path<input type="text" name="image"></label>
               <label>Upload Style Image<input type="file" name="imageFile" id="styleImageFile" accept="image/*"></label>
               <label class="full-span">Notes<textarea name="notes" rows="3"></textarea></label>
@@ -191,6 +194,26 @@
         </div>
       </section>
 
+      <section class="tab-panel" id="dispatch">
+        <div class="panel-header"><div><p class="eyebrow">Daily Entry</p><h2>Dispatch Details</h2></div></div>
+        <div class="grid-two">
+          <section class="card">
+            <div class="section-title"><h3>New Dispatch Entry</h3></div>
+            <form id="dispatchForm" class="form-grid">
+              <label>Date<input type="date" name="date" required></label>
+              <label>Style<select name="styleId" required id="dispatchStyleSelect"></select></label>
+              <label class="full-span">Remarks<input type="text" name="remarks"></label>
+              <div class="full-span"><div class="section-title compact"><h3>Size-wise Dispatch Quantity</h3></div><div id="dispatchSizeRows" class="size-grid"></div></div>
+              <div class="full-span action-row"><button type="submit">Save Dispatch</button></div>
+            </form>
+          </section>
+          <section class="card">
+            <div class="section-title"><h3>Dispatch Entries</h3></div>
+            <div class="table-wrap"><table><thead><tr><th>Date</th><th>Style</th><th>Total Qty</th><th>Size-wise</th><th>Remarks</th><th>Action</th></tr></thead><tbody id="dispatchEntriesTable"></tbody></table></div>
+          </section>
+        </div>
+      </section>
+
       <section class="tab-panel" id="reports">
         <div class="panel-header"><div><p class="eyebrow">Reports</p><h2>Reconciliation and Billing</h2></div></div>
         <section class="card report-controls">
@@ -198,16 +221,28 @@
             <label>Report Date<input type="date" id="reportDate"></label>
             <button type="button" id="clearReportDate" class="ghost">Clear Date</button>
             <button type="button" id="downloadStyleAmountReport" class="ghost">Download Style Amount CSV</button>
+            <button type="button" id="downloadCuttingReport" class="ghost">Download Cutting Report XLSX</button>
+            <button type="button" id="downloadFlowReport" class="ghost">Download Cut-Make-Dispatch XLSX</button>
           </div>
         </section>
         <div class="grid-two">
           <section class="card">
             <div class="section-title"><h3>Style-wise Amount Report</h3></div>
-            <div class="table-wrap"><table><thead><tr><th>Date Filter</th><th>Style</th><th>Color</th><th>Produced Qty</th><th>CMT Rate</th><th>Amount</th></tr></thead><tbody id="styleAmountReportTable"></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>Date Filter</th><th>Style</th><th>Color</th><th>Produced Qty</th><th>CMT Rate</th><th>Service %</th><th>Service Amt</th><th>Total Amount</th></tr></thead><tbody id="styleAmountReportTable"></tbody></table></div>
           </section>
           <section class="card">
             <div class="section-title"><h3>Reconciliation Report</h3></div>
             <div class="table-wrap"><table><thead><tr><th>Style</th><th>Cut Qty</th><th>Produced Qty</th><th>Accepted Qty</th><th>Rejected Qty</th><th>Balance</th></tr></thead><tbody id="reconciliationTable"></tbody></table></div>
+          </section>
+        </div>
+        <div class="grid-two">
+          <section class="card">
+            <div class="section-title"><h3>Cutting Report</h3></div>
+            <div class="table-wrap"><table><thead id="cuttingReportHead"></thead><tbody id="cuttingReportTable"></tbody></table></div>
+          </section>
+          <section class="card">
+            <div class="section-title"><h3>Size-wise Dispatch Details</h3></div>
+            <div class="table-wrap"><table><thead><tr><th>Photo</th><th>Style</th><th>Color</th><th>Size</th><th>Cut</th><th>Make</th><th>Dispatch</th><th>Amount</th><th>Balance</th></tr></thead><tbody id="dispatchReportTable"></tbody></table></div>
           </section>
         </div>
         <div class="grid-two">
@@ -218,6 +253,17 @@
         </div>
       </section>
     </main>
+  </div>
+
+  <div id="imagePreviewModal" class="image-modal" hidden>
+    <div class="image-modal-backdrop" data-close-image-preview="true"></div>
+    <div class="image-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="imagePreviewTitle">
+      <div class="image-modal-header">
+        <h3 id="imagePreviewTitle">Style Preview</h3>
+        <button type="button" id="closeImagePreview" class="ghost small">Close</button>
+      </div>
+      <img id="imagePreviewModalImg" class="image-modal-img" alt="Style preview">
+    </div>
   </div>
 
   <template id="operationRateTemplate">
