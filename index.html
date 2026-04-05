@@ -55,6 +55,26 @@
           <button type="submit" class="ghost">Save Sizes</button>
         </form>
       </div>
+      <div class="sidebar-card">
+        <h2>Section Access</h2>
+        <p>Create a separate access code and share link for each entry section.</p>
+        <form id="accessCodeForm" class="stack">
+          <div class="access-code-grid">
+            <label>Style Master<input type="password" name="styles" placeholder="Set code"></label>
+            <button type="button" class="ghost small" data-copy-access-link="styles">Copy Link</button>
+            <label>Cutting<input type="password" name="cutting" placeholder="Set code"></label>
+            <button type="button" class="ghost small" data-copy-access-link="cutting">Copy Link</button>
+            <label>Production<input type="password" name="production" placeholder="Set code"></label>
+            <button type="button" class="ghost small" data-copy-access-link="production">Copy Link</button>
+            <label>Acceptance<input type="password" name="acceptance" placeholder="Set code"></label>
+            <button type="button" class="ghost small" data-copy-access-link="acceptance">Copy Link</button>
+            <label>Dispatch<input type="password" name="dispatch" placeholder="Set code"></label>
+            <button type="button" class="ghost small" data-copy-access-link="dispatch">Copy Link</button>
+          </div>
+          <button type="submit" class="ghost">Save Access Codes</button>
+          <p id="accessCodeStatus" class="field-hint">Set a code first, then use Copy Link for that section.</p>
+        </form>
+      </div>
     </aside>
 
     <main class="content">
@@ -80,8 +100,10 @@
             <div class="section-title"><h3>New Style</h3></div>
             <div class="action-row">
               <label class="ghost file-label">Upload Styles CSV<input type="file" id="styleImportInput" accept=".csv,text/csv"></label>
+              <label class="ghost file-label">Select Style Images<input type="file" id="styleImageImportInput" accept="image/*" multiple></label>
               <a class="ghost file-label" href="style-sample.csv" download>Style Sample</a>
             </div>
+            <p class="status-text">For CSV image import, put the image file name in the `image` column, then select those image files here.</p>
             <form id="styleForm" class="form-grid">
               <label>Style Number<input type="text" name="styleNumber" required placeholder="ST-101"></label>
               <label>Buyer Name<input type="text" name="buyerName"></label>
@@ -90,8 +112,15 @@
               <label>Order Qty<input type="number" name="orderQty" min="0" step="1" placeholder="0"></label>
               <label>Total CMT Rate (Rs)<input type="number" name="cmtRate" min="0" step="0.01" required></label>
               <label>Service Charge (%)<input type="number" name="serviceChargePct" min="0" step="0.01" placeholder="0"></label>
-              <label>Image URL or file path<input type="text" name="image"></label>
+              <label>Image URL<input type="text" name="image"></label>
               <label>Upload Style Image<input type="file" name="imageFile" id="styleImageFile" accept="image/*"></label>
+              <div class="stack gap-sm">
+                <button type="button" id="pasteStyleImageBtn" class="ghost">Paste Image From Clipboard</button>
+                <p id="styleImagePasteStatus" class="field-hint">You can also click here after copying a screenshot and press `Ctrl + V`.</p>
+              </div>
+              <div class="style-form-preview full-span" id="styleFormImagePreview" hidden>
+                <img id="styleFormImagePreviewImg" class="style-thumb" alt="Style form preview">
+              </div>
               <label class="full-span">Notes<textarea name="notes" rows="3"></textarea></label>
               <div class="full-span">
                 <div class="section-title compact"><h3>Operation Rates</h3><button type="button" id="addOperationRateBtn" class="ghost small">Add Operation</button></div>
@@ -102,7 +131,11 @@
           </section>
           <section class="card">
             <div class="section-title"><h3>Saved Styles</h3></div>
-            <div id="styleCards" class="stack"></div>
+            <label class="list-search">
+              Search Style
+              <input type="text" id="styleCardSearch" placeholder="Search full style no. or last 2-3 digits">
+            </label>
+            <div id="styleCards" class="stack scroll-list"></div>
           </section>
         </div>
       </section>
@@ -118,6 +151,7 @@
             </div>
             <form id="cuttingForm" class="form-grid">
               <label>Date<input type="date" name="date" required></label>
+              <label>Search Style<input type="text" id="cuttingStyleSearch" placeholder="Full style no. or last 2-3 digits"></label>
               <label>Style<select name="styleId" required id="cuttingStyleSelect"></select></label>
               <label class="full-span">Remarks<input type="text" name="remarks"></label>
               <div class="full-span"><div class="section-title compact"><h3>Size-wise Quantity</h3></div><div id="cuttingSizeRows" class="size-grid"></div></div>
@@ -138,6 +172,7 @@
             <div class="section-title"><h3>Style-wise Production Entry</h3></div>
             <form id="styleProductionForm" class="form-grid">
               <label>Date<input type="date" name="date" required></label>
+              <label>Search Style<input type="text" id="styleProductionStyleSearch" placeholder="Full style no. or last 2-3 digits"></label>
               <label>Style<select name="styleId" required id="styleProductionStyleSelect"></select></label>
               <label class="full-span">Remarks<input type="text" name="remarks"></label>
               <div class="full-span"><div class="section-title compact"><h3>Size-wise Produced Quantity</h3></div><div id="styleProductionSizeRows" class="size-grid"></div></div>
@@ -158,6 +193,7 @@
             </div>
             <form id="productionForm" class="form-grid">
               <label>Date<input type="date" name="date" required></label>
+              <label>Search Style<input type="text" id="productionStyleSearch" placeholder="Full style no. or last 2-3 digits"></label>
               <label>Style<select name="styleId" required id="productionStyleSelect"></select></label>
               <label>Operation<select name="operationName" required id="productionOperationSelect"></select></label>
               <label>Worker / Contractor<input type="text" name="workerName" required></label>
@@ -181,6 +217,7 @@
             <div class="section-title"><h3>New Acceptance Entry</h3></div>
             <form id="acceptanceForm" class="form-grid">
               <label>Date<input type="date" name="date" required></label>
+              <label>Search Style<input type="text" id="acceptanceStyleSearch" placeholder="Full style no. or last 2-3 digits"></label>
               <label>Style<select name="styleId" required id="acceptanceStyleSelect"></select></label>
               <label class="full-span">Remarks<input type="text" name="remarks"></label>
               <div class="full-span"><div class="section-title compact"><h3>Size-wise Accepted and Rejected</h3></div><div id="acceptanceSizeRows" class="acceptance-grid"></div></div>
@@ -201,6 +238,7 @@
             <div class="section-title"><h3>New Dispatch Entry</h3></div>
             <form id="dispatchForm" class="form-grid">
               <label>Date<input type="date" name="date" required></label>
+              <label>Search Style<input type="text" id="dispatchStyleSearch" placeholder="Full style no. or last 2-3 digits"></label>
               <label>Style<select name="styleId" required id="dispatchStyleSelect"></select></label>
               <label class="full-span">Remarks<input type="text" name="remarks"></label>
               <div class="full-span"><div class="section-title compact"><h3>Size-wise Dispatch Quantity</h3></div><div id="dispatchSizeRows" class="size-grid"></div></div>

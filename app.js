@@ -1,6 +1,14 @@
 
 const STORAGE_KEY = "piece-rate-calculator-v1";
 const DEFAULT_SIZE_LIST = ["XS", "S", "M", "L", "XL", "XXL"];
+const SECTION_ACCESS_TABS = ["styles", "cutting", "production", "acceptance", "dispatch"];
+const SECTION_ACCESS_LABELS = {
+  styles: "Style Master",
+  cutting: "Cutting Entry",
+  production: "Production Entry",
+  acceptance: "Acceptance Entry",
+  dispatch: "Dispatch Entry"
+};
 const DEFAULTS = {
   styles: [],
   cuttingEntries: [],
@@ -8,7 +16,16 @@ const DEFAULTS = {
   productionEntries: [],
   acceptanceEntries: [],
   dispatchEntries: [],
-  settings: { sizes: DEFAULT_SIZE_LIST }
+  settings: {
+    sizes: DEFAULT_SIZE_LIST,
+    accessCodes: {
+      styles: "",
+      cutting: "",
+      production: "",
+      acceptance: "",
+      dispatch: ""
+    }
+  }
 };
 const CLOUD_REFRESH_MS = 15000;
 
@@ -18,36 +35,46 @@ let lastCloudUpdatedAt = "";
 let cloudRefreshTimer = null;
 let isApplyingRemoteState = false;
 let isSyncing = false;
+let pastedStyleImageDataUrl = "";
+let activeSharedSection = "";
 
 const $ = (id) => document.getElementById(id);
 const els = {
   navLinks: document.querySelectorAll(".nav-link"),
   panels: document.querySelectorAll(".tab-panel"),
   styleForm: $("styleForm"),
+  styleCardSearch: $("styleCardSearch"),
   sizeSettingsForm: $("sizeSettingsForm"),
   sizeListInput: $("sizeListInput"),
+  accessCodeForm: $("accessCodeForm"),
+  accessCodeStatus: $("accessCodeStatus"),
   operationRateRows: $("operationRateRows"),
   addOperationRateBtn: $("addOperationRateBtn"),
   operationRateTemplate: $("operationRateTemplate"),
   styleCards: $("styleCards"),
   cuttingForm: $("cuttingForm"),
+  cuttingStyleSearch: $("cuttingStyleSearch"),
   cuttingStyleSelect: $("cuttingStyleSelect"),
   cuttingSizeRows: $("cuttingSizeRows"),
   cuttingEntriesTable: $("cuttingEntriesTable"),
   styleProductionForm: $("styleProductionForm"),
+  styleProductionStyleSearch: $("styleProductionStyleSearch"),
   styleProductionStyleSelect: $("styleProductionStyleSelect"),
   styleProductionSizeRows: $("styleProductionSizeRows"),
   styleProductionEntriesTable: $("styleProductionEntriesTable"),
   productionForm: $("productionForm"),
+  productionStyleSearch: $("productionStyleSearch"),
   productionStyleSelect: $("productionStyleSelect"),
   productionOperationSelect: $("productionOperationSelect"),
   productionSizeSelect: $("productionSizeSelect"),
   productionEntriesTable: $("productionEntriesTable"),
   acceptanceForm: $("acceptanceForm"),
+  acceptanceStyleSearch: $("acceptanceStyleSearch"),
   acceptanceStyleSelect: $("acceptanceStyleSelect"),
   acceptanceSizeRows: $("acceptanceSizeRows"),
   acceptanceEntriesTable: $("acceptanceEntriesTable"),
   dispatchForm: $("dispatchForm"),
+  dispatchStyleSearch: $("dispatchStyleSearch"),
   dispatchStyleSelect: $("dispatchStyleSelect"),
   dispatchSizeRows: $("dispatchSizeRows"),
   dispatchEntriesTable: $("dispatchEntriesTable"),
@@ -68,6 +95,12 @@ const els = {
   exportBtn: $("exportBtn"),
   importInput: $("importInput"),
   styleImportInput: $("styleImportInput"),
+  styleImageImportInput: $("styleImageImportInput"),
+  styleImageFile: $("styleImageFile"),
+  pasteStyleImageBtn: $("pasteStyleImageBtn"),
+  styleImagePasteStatus: $("styleImagePasteStatus"),
+  styleFormImagePreview: $("styleFormImagePreview"),
+  styleFormImagePreviewImg: $("styleFormImagePreviewImg"),
   cuttingImportInput: $("cuttingImportInput"),
   productionImportInput: $("productionImportInput"),
   storageModeBadge: $("storageModeBadge"),
@@ -91,7 +124,9 @@ async function init() {
   setToday();
   buildSizeSelect();
   els.sizeListInput.value = getSizes().join(", ");
+  populateAccessCodeInputs();
   bindForms();
+  applySharedSectionAccess();
   updateStorageModeUi();
   render();
   startCloudRefresh();
@@ -99,11 +134,14 @@ async function init() {
 
 function bindTabs() {
   els.navLinks.forEach((btn) => btn.addEventListener("click", () => {
-    els.navLinks.forEach((n) => n.classList.remove("active"));
-    els.panels.forEach((p) => p.classList.remove("active"));
-    btn.classList.add("active");
-    $(btn.dataset.tab).classList.add("active");
+    if (activeSharedSection && btn.dataset.tab !== activeSharedSection) return;
+    activateTab(btn.dataset.tab);
   }));
+}
+
+function activateTab(tabId) {
+  els.navLinks.forEach((n) => n.classList.toggle("active", n.dataset.tab === tabId));
+  els.panels.forEach((p) => p.classList.toggle("active", p.id === tabId));
 }
 
 function seedOperationRows() {
@@ -162,8 +200,22 @@ function bindForms() {
   els.acceptanceEntriesTable.addEventListener("click", handleAcceptanceTableAction);
   els.dispatchEntriesTable.addEventListener("click", handleDispatchTableAction);
   els.sizeSettingsForm.addEventListener("submit", saveSizes);
+  els.accessCodeForm?.addEventListener("submit", saveAccessCodes);
+  els.accessCodeForm?.addEventListener("click", handleAccessLinkCopy);
 
   els.styleForm.addEventListener("submit", saveStyle);
+  els.styleForm.addEventListener("reset", () => {
+    setTimeout(() => {
+      clearPastedStyleImage();
+      updateStyleFormImagePreview();
+    }, 0);
+  });
+  els.styleForm.addEventListener("paste", handleStyleImagePaste);
+  els.styleForm.image?.addEventListener("input", () => {
+    if (clean(els.styleForm.image.value)) pastedStyleImageDataUrl = "";
+    updateStyleFormImagePreview();
+  });
+  els.styleImageFile?.addEventListener("change", handleStyleImageFileChange);
   els.cuttingForm.addEventListener("submit", saveCutting);
   els.styleProductionForm.addEventListener("submit", saveStyleProduction);
   els.productionForm.addEventListener("submit", saveProduction);
@@ -180,11 +232,29 @@ function bindForms() {
   els.styleImportInput.addEventListener("change", importStylesCsv);
   els.cuttingImportInput.addEventListener("change", importCuttingCsv);
   els.productionImportInput.addEventListener("change", importProductionCsv);
+  els.pasteStyleImageBtn?.addEventListener("click", pasteStyleImageFromClipboard);
+  bindStyleSearches();
   els.closeImagePreview?.addEventListener("click", closeImagePreview);
   els.imagePreviewModal?.addEventListener("click", (e) => {
     if (e.target instanceof HTMLElement && e.target.dataset.closeImagePreview === "true") {
       closeImagePreview();
     }
+  });
+}
+
+function bindStyleSearches() {
+  [
+    [els.styleCardSearch, null],
+    [els.cuttingStyleSearch, els.cuttingStyleSelect],
+    [els.styleProductionStyleSearch, els.styleProductionStyleSelect],
+    [els.productionStyleSearch, els.productionStyleSelect],
+    [els.acceptanceStyleSearch, els.acceptanceStyleSelect],
+    [els.dispatchStyleSearch, els.dispatchStyleSelect]
+  ].forEach(([input, select]) => {
+    input?.addEventListener("input", () => {
+      if (select) renderStyleSelect(select, input.value);
+      else renderStyles();
+    });
   });
 }
 async function saveStyle(e) {
@@ -217,7 +287,7 @@ async function saveStyle(e) {
     orderQty: num(f.get("orderQty")),
     cmtRate: num(f.get("cmtRate")),
     serviceChargePct: num(f.get("serviceChargePct")),
-    image: uploadedImage || imageValue || existingStyle?.image || "",
+    image: uploadedImage || pastedStyleImageDataUrl || imageValue || existingStyle?.image || "",
     notes: clean(f.get("notes")),
     operations
   };
@@ -231,6 +301,8 @@ async function saveStyle(e) {
   }
 
   els.styleForm.reset();
+  clearPastedStyleImage();
+  updateStyleFormImagePreview();
   els.operationRateRows.innerHTML = "";
   seedOperationRows();
   setToday();
@@ -356,12 +428,28 @@ function render() {
 }
 
 function renderStyleSelects() {
-  [els.cuttingStyleSelect, els.styleProductionStyleSelect, els.productionStyleSelect, els.acceptanceStyleSelect, els.dispatchStyleSelect].forEach((select) => {
-    const current = select.value;
-    select.innerHTML = `<option value="">${state.styles.length ? "Select style" : "No style created"}</option>` +
-      state.styles.map((s) => `<option value="${s.id}">${esc(styleLabel(s))}</option>`).join("");
-    if ([...select.options].some((o) => o.value === current)) select.value = current;
-  });
+  renderStyleSelect(els.cuttingStyleSelect, els.cuttingStyleSearch?.value || "");
+  renderStyleSelect(els.styleProductionStyleSelect, els.styleProductionStyleSearch?.value || "");
+  renderStyleSelect(els.productionStyleSelect, els.productionStyleSearch?.value || "");
+  renderStyleSelect(els.acceptanceStyleSelect, els.acceptanceStyleSearch?.value || "");
+  renderStyleSelect(els.dispatchStyleSelect, els.dispatchStyleSearch?.value || "");
+}
+
+function renderStyleSelect(select, searchTerm = "") {
+  const current = select.value;
+  const filteredStyles = filterStyles(searchTerm);
+  const emptyLabel = !state.styles.length
+    ? "No style created"
+    : filteredStyles.length
+      ? "Select style"
+      : "No matching style";
+  select.innerHTML = `<option value="">${emptyLabel}</option>` +
+    filteredStyles.map((s) => `<option value="${s.id}">${esc(styleLabel(s))}</option>`).join("");
+  if ([...select.options].some((o) => o.value === current)) {
+    select.value = current;
+  } else if (filteredStyles.length === 1) {
+    select.value = filteredStyles[0].id;
+  }
 }
 
 function renderOperationSelect() {
@@ -373,7 +461,8 @@ function renderOperationSelect() {
 }
 
 function renderStyles() {
-  els.styleCards.innerHTML = state.styles.length ? state.styles.map((style) => `
+  const filteredStyles = filterStyles(els.styleCardSearch?.value || "");
+  els.styleCards.innerHTML = filteredStyles.length ? filteredStyles.map((style) => `
     <article class="style-card">
       ${style.image ? `
         <div class="style-media">
@@ -395,7 +484,7 @@ function renderStyles() {
         <button type="button" class="ghost small" data-action="edit-style" data-style-id="${style.id}">Edit</button>
         <button type="button" class="ghost small" data-action="delete-style" data-style-id="${style.id}">Delete</button>
       </div>
-    </article>`).join("") : '<div class="empty-state">No styles added yet.</div>';
+    </article>`).join("") : `<div class="empty-state">${state.styles.length ? "No styles match this search." : "No styles added yet."}</div>`;
 }
 
 function renderCutting() {
@@ -626,6 +715,7 @@ async function importStylesCsv(e) {
   if (!file) return;
   try {
     const rows = parseCsv(await file.text());
+    const importedImageMap = await buildImportedImageMap(els.styleImageImportInput?.files);
     rows.forEach((row) => {
       const styleNumber = clean(row.styleNumber);
       if (!styleNumber) return;
@@ -633,6 +723,7 @@ async function importStylesCsv(e) {
       const color = clean(row.color);
       const variant = state.styles.find((s) => s.styleNumber.toLowerCase() === styleNumber.toLowerCase() && clean(s.color).toLowerCase() === color.toLowerCase());
       const operations = extractOperations(row);
+      const resolvedImage = resolveImportedImage(row.image, importedImageMap);
       const payload = {
         id: variant?.id || uid(),
         styleNumber,
@@ -642,7 +733,7 @@ async function importStylesCsv(e) {
         orderQty: num(row.orderQty),
         cmtRate: num(row.cmtRate),
         serviceChargePct: num(row.serviceChargePct),
-        image: clean(row.image),
+        image: resolvedImage || variant?.image || existing?.image || "",
         notes: clean(row.notes),
         operations
       };
@@ -660,6 +751,7 @@ async function importStylesCsv(e) {
     alert("Could not import style CSV.");
   }
   els.styleImportInput.value = "";
+  if (els.styleImageImportInput) els.styleImageImportInput.value = "";
 }
 
 async function importCuttingCsv(e) {
@@ -780,6 +872,7 @@ function handleStyleCardAction(e) {
 function editStyle(styleId) {
   const style = byId(styleId);
   if (!style) return;
+  clearPastedStyleImage();
   els.styleForm.dataset.editId = style.id;
   els.styleForm.styleNumber.value = style.styleNumber;
   els.styleForm.buyerName.value = style.buyerName || "";
@@ -793,6 +886,7 @@ function editStyle(styleId) {
   els.styleForm.notes.value = style.notes || "";
   els.operationRateRows.innerHTML = "";
   (style.operations.length ? style.operations : [{ operationName: "", rate: "" }]).forEach((op) => addOperationRow(op.operationName, op.rate));
+  updateStyleFormImagePreview(style.image || "");
   els.styleForm.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -935,6 +1029,32 @@ function styleLabel(style) {
   return style.color ? `${style.styleNumber} - ${style.color}` : style.styleNumber;
 }
 
+function filterStyles(searchTerm = "") {
+  const query = normalizeStyleSearch(searchTerm);
+  if (!query) {
+    return state.styles.slice().sort((a, b) => styleLabel(a).localeCompare(styleLabel(b)));
+  }
+  return state.styles
+    .filter((style) => styleMatchesSearch(style, query))
+    .sort((a, b) => styleLabel(a).localeCompare(styleLabel(b)));
+}
+
+function styleMatchesSearch(style, query) {
+  const styleNumber = normalizeStyleSearch(style?.styleNumber || "");
+  if (styleNumber.includes(query)) return true;
+  const styleDigits = digitsOnly(styleNumber);
+  const queryDigits = digitsOnly(query);
+  return queryDigits.length >= 2 && styleDigits.endsWith(queryDigits);
+}
+
+function normalizeStyleSearch(value) {
+  return clean(value).toLowerCase().replace(/\s+/g, "");
+}
+
+function digitsOnly(value) {
+  return String(value || "").replace(/\D+/g, "");
+}
+
 function formatQuantities(quantities = {}) {
   return Object.entries(quantities).filter(([, qty]) => num(qty) > 0).map(([size, qty]) => `${size}: ${fmtInt(qty)}`).join(", ") || "-";
 }
@@ -952,6 +1072,114 @@ function fileToDataUrl(file) {
   });
 }
 
+function handleStyleImagePaste(e) {
+  const clipboardItems = [...(e.clipboardData?.items || [])];
+  const imageItem = clipboardItems.find((item) => item.type.startsWith("image/"));
+  if (!imageItem) return;
+  e.preventDefault();
+  const file = imageItem.getAsFile();
+  if (!file) return;
+  void storePastedStyleImage(file);
+}
+
+async function pasteStyleImageFromClipboard() {
+  if (!navigator.clipboard?.read) {
+    setStyleImagePasteStatus("Clipboard paste button is not supported in this browser. Use Ctrl + V after copying the image.");
+    return;
+  }
+  try {
+    const clipboardItems = await navigator.clipboard.read();
+    for (const item of clipboardItems) {
+      const imageType = item.types.find((type) => type.startsWith("image/"));
+      if (!imageType) continue;
+      const blob = await item.getType(imageType);
+      await storePastedStyleImage(blob);
+      return;
+    }
+    setStyleImagePasteStatus("No image found in the clipboard.");
+  } catch (error) {
+    console.error(error);
+    setStyleImagePasteStatus("Clipboard access was blocked. Try the button again or use Ctrl + V.");
+  }
+}
+
+async function storePastedStyleImage(fileOrBlob) {
+  pastedStyleImageDataUrl = await blobToDataUrl(fileOrBlob);
+  const imageInput = els.styleForm?.querySelector('[name="imageFile"]');
+  if (imageInput) imageInput.value = "";
+  if (els.styleForm?.image) els.styleForm.image.value = "";
+  setStyleImagePasteStatus("Clipboard image added. Save Style to keep it.");
+  updateStyleFormImagePreview();
+}
+
+function clearPastedStyleImage() {
+  pastedStyleImageDataUrl = "";
+  setStyleImagePasteStatus("You can also click here after copying a screenshot and press Ctrl + V.");
+}
+
+function setStyleImagePasteStatus(message) {
+  if (els.styleImagePasteStatus) els.styleImagePasteStatus.textContent = message;
+}
+
+async function handleStyleImageFileChange() {
+  const file = els.styleImageFile?.files?.[0];
+  if (!file) {
+    updateStyleFormImagePreview();
+    return;
+  }
+  pastedStyleImageDataUrl = await fileToDataUrl(file);
+  if (els.styleForm?.image) els.styleForm.image.value = "";
+  setStyleImagePasteStatus("Uploaded image selected. Save Style to keep it.");
+  updateStyleFormImagePreview();
+}
+
+function updateStyleFormImagePreview(explicitSource = "") {
+  if (!els.styleFormImagePreview || !els.styleFormImagePreviewImg) return;
+  const source = explicitSource || pastedStyleImageDataUrl || clean(els.styleForm?.image?.value || "");
+  if (!source) {
+    els.styleFormImagePreview.hidden = true;
+    els.styleFormImagePreviewImg.removeAttribute("src");
+    return;
+  }
+  els.styleFormImagePreview.hidden = false;
+  els.styleFormImagePreviewImg.src = source;
+}
+
+async function buildImportedImageMap(fileList) {
+  const files = [...(fileList || [])];
+  const entries = await Promise.all(files.map(async (file) => {
+    const dataUrl = await fileToDataUrl(file);
+    return [normalizeImageLookupKey(file.name), dataUrl];
+  }));
+  return new Map(entries);
+}
+
+function resolveImportedImage(imageValue, importedImageMap) {
+  const rawValue = clean(imageValue);
+  if (!rawValue) return "";
+  if (isDirectImageSource(rawValue)) return rawValue;
+  const lookupKeys = [
+    normalizeImageLookupKey(rawValue),
+    normalizeImageLookupKey(fileNameFromPath(rawValue))
+  ].filter(Boolean);
+  for (const key of lookupKeys) {
+    if (importedImageMap.has(key)) return importedImageMap.get(key);
+  }
+  return rawValue;
+}
+
+function isDirectImageSource(value) {
+  return /^data:image\//i.test(value) || /^(https?:)?\/\//i.test(value) || value.startsWith("./") || value.startsWith("../") || value.startsWith("/");
+}
+
+function fileNameFromPath(value) {
+  return clean(value).split(/[\\/]/).pop() || "";
+}
+
+function normalizeImageLookupKey(value) {
+  return clean(value).toLowerCase();
+}
+
 async function saveSizes(e) {
   e.preventDefault();
   const sizes = parseSizeList(els.sizeListInput.value);
@@ -965,6 +1193,100 @@ async function saveSizes(e) {
   buildSizeSelect();
   await persistState();
   alert("Sizes updated successfully.");
+}
+
+async function saveAccessCodes(e) {
+  e.preventDefault();
+  state.settings = state.settings || {};
+  state.settings.accessCodes = state.settings.accessCodes || {};
+  SECTION_ACCESS_TABS.forEach((section) => {
+    state.settings.accessCodes[section] = clean(els.accessCodeForm?.elements?.[section]?.value || "");
+  });
+  await persistState();
+  setAccessCodeStatus("Access codes saved.");
+}
+
+async function handleAccessLinkCopy(e) {
+  const button = e.target.closest("[data-copy-access-link]");
+  if (!button) return;
+  const section = button.dataset.copyAccessLink;
+  const code = getSectionAccessCode(section);
+  if (!code) {
+    setAccessCodeStatus(`Set and save a code for ${SECTION_ACCESS_LABELS[section]} first.`);
+    return;
+  }
+  const shareUrl = buildSectionAccessUrl(section, code);
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(shareUrl);
+      setAccessCodeStatus(`${SECTION_ACCESS_LABELS[section]} link copied.`);
+    } else {
+      setAccessCodeStatus(shareUrl);
+    }
+  } catch {
+    setAccessCodeStatus(shareUrl);
+  }
+}
+
+function populateAccessCodeInputs() {
+  if (!els.accessCodeForm) return;
+  SECTION_ACCESS_TABS.forEach((section) => {
+    const input = els.accessCodeForm.elements?.[section];
+    if (input) input.value = getSectionAccessCode(section);
+  });
+}
+
+function setAccessCodeStatus(message) {
+  if (els.accessCodeStatus) els.accessCodeStatus.textContent = message;
+}
+
+function getSectionAccessCode(section) {
+  return clean(state.settings?.accessCodes?.[section] || "");
+}
+
+function buildSectionAccessUrl(section, code) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("section", section);
+  url.searchParams.set("code", code);
+  return url.toString();
+}
+
+function applySharedSectionAccess() {
+  const url = new URL(window.location.href);
+  const requestedSection = clean(url.searchParams.get("section"));
+  const requestedCode = clean(url.searchParams.get("code"));
+  activeSharedSection = "";
+  if (!requestedSection || !requestedCode || !SECTION_ACCESS_TABS.includes(requestedSection)) {
+    clearSharedSectionAccess();
+    return;
+  }
+  if (requestedCode !== getSectionAccessCode(requestedSection)) {
+    clearSharedSectionAccess();
+    setAccessCodeStatus(`Shared link code for ${SECTION_ACCESS_LABELS[requestedSection]} is invalid.`);
+    alert("This shared section link is invalid or the access code does not match.");
+    return;
+  }
+  activeSharedSection = requestedSection;
+  els.navLinks.forEach((btn) => {
+    const allowed = btn.dataset.tab === requestedSection;
+    btn.hidden = !allowed;
+  });
+  els.panels.forEach((panel) => {
+    const allowed = panel.id === requestedSection;
+    panel.hidden = !allowed;
+  });
+  activateTab(requestedSection);
+}
+
+function clearSharedSectionAccess() {
+  els.navLinks.forEach((btn) => {
+    btn.hidden = false;
+  });
+  els.panels.forEach((panel) => {
+    panel.hidden = false;
+  });
+  const activeButton = [...els.navLinks].find((btn) => btn.classList.contains("active")) || els.navLinks[0];
+  if (activeButton) activateTab(activeButton.dataset.tab);
 }
 
 function getSizes() {
@@ -985,6 +1307,7 @@ function normalizeState() {
   if (!Array.isArray(state.settings.sizes) || !state.settings.sizes.length) {
     state.settings.sizes = [...DEFAULT_SIZE_LIST];
   }
+  state.settings.accessCodes = { ...clone(DEFAULTS.settings.accessCodes), ...(state.settings.accessCodes || {}) };
   state.styles = (state.styles || []).map((style) => ({
     ...style,
     orderQty: num(style.orderQty),
