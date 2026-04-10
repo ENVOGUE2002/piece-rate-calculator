@@ -37,9 +37,12 @@ let isApplyingRemoteState = false;
 let isSyncing = false;
 let pastedStyleImageDataUrl = "";
 let activeSharedSection = "";
+let pendingStyleImportFile = null;
 
 const $ = (id) => document.getElementById(id);
 const els = {
+  sidebar: document.querySelector(".sidebar"),
+  sidebarCards: document.querySelectorAll(".sidebar-card"),
   navLinks: document.querySelectorAll(".nav-link"),
   panels: document.querySelectorAll(".tab-panel"),
   styleForm: $("styleForm"),
@@ -62,6 +65,7 @@ const els = {
   styleProductionStyleSelect: $("styleProductionStyleSelect"),
   styleProductionSizeRows: $("styleProductionSizeRows"),
   styleProductionEntriesTable: $("styleProductionEntriesTable"),
+  styleProductionImportInput: $("styleProductionImportInput"),
   productionForm: $("productionForm"),
   productionStyleSearch: $("productionStyleSearch"),
   productionStyleSelect: $("productionStyleSelect"),
@@ -91,6 +95,7 @@ const els = {
   clearReportDate: $("clearReportDate"),
   downloadStyleAmountReport: $("downloadStyleAmountReport"),
   downloadCuttingReport: $("downloadCuttingReport"),
+  downloadInternalChallan: $("downloadInternalChallan"),
   downloadFlowReport: $("downloadFlowReport"),
   exportBtn: $("exportBtn"),
   importInput: $("importInput"),
@@ -134,7 +139,7 @@ async function init() {
 
 function bindTabs() {
   els.navLinks.forEach((btn) => btn.addEventListener("click", () => {
-    if (activeSharedSection && btn.dataset.tab !== activeSharedSection) return;
+    if (activeSharedSection && !isSharedSectionTabAllowed(btn.dataset.tab)) return;
     activateTab(btn.dataset.tab);
   }));
 }
@@ -226,11 +231,14 @@ function bindForms() {
   els.clearReportDate.addEventListener("click", clearReportDateFilter);
   els.downloadStyleAmountReport.addEventListener("click", downloadStyleAmountReport);
   els.downloadCuttingReport.addEventListener("click", downloadCuttingReport);
+  els.downloadInternalChallan?.addEventListener("click", downloadInternalChallan);
   els.downloadFlowReport.addEventListener("click", downloadFlowReport);
   els.exportBtn.addEventListener("click", exportData);
   els.importInput.addEventListener("change", importData);
   els.styleImportInput.addEventListener("change", importStylesCsv);
+  els.styleImageImportInput?.addEventListener("change", importStylesCsvFromPendingSelection);
   els.cuttingImportInput.addEventListener("change", importCuttingCsv);
+  els.styleProductionImportInput?.addEventListener("change", importStyleProductionCsv);
   els.productionImportInput.addEventListener("change", importProductionCsv);
   els.pasteStyleImageBtn?.addEventListener("click", pasteStyleImageFromClipboard);
   bindStyleSearches();
@@ -318,6 +326,7 @@ async function saveCutting(e) {
     id: entryId,
     date: f.get("date"),
     styleId: f.get("styleId"),
+    service: clean(f.get("service")),
     remarks: clean(f.get("remarks")),
     quantities: Object.fromEntries(sizes.map((size) => [size, num(els.cuttingSizeRows.querySelector(`[name="cut_${size}"]`).value)]))
   };
@@ -333,12 +342,15 @@ async function saveStyleProduction(e) {
   const f = new FormData(els.styleProductionForm);
   const sizes = getSizes();
   const entryId = els.styleProductionForm.dataset.editId || uid();
+  const quantities = Object.fromEntries(sizes.map((size) => [size, num(els.styleProductionSizeRows.querySelector(`[name="styleProd_${size}"]`).value)]));
+  const totalQty = num(f.get("totalQty"));
   const payload = {
     id: entryId,
     date: f.get("date"),
     styleId: f.get("styleId"),
     remarks: clean(f.get("remarks")),
-    quantities: Object.fromEntries(sizes.map((size) => [size, num(els.styleProductionSizeRows.querySelector(`[name="styleProd_${size}"]`).value)]))
+    totalQty,
+    quantities
   };
   upsertEntry("styleProductionEntries", payload, entryId);
   delete els.styleProductionForm.dataset.editId;
@@ -489,17 +501,17 @@ function renderStyles() {
 
 function renderCutting() {
   els.cuttingEntriesTable.innerHTML = rowsOrEmpty(state.cuttingEntries.slice().reverse().map((entry) => `
-    <tr><td>${esc(entry.date)}</td><td>${esc(styleLabel(byId(entry.styleId)))}</td><td>${fmtInt(byId(entry.styleId)?.orderQty || 0)}</td><td>${fmtInt(sumObj(entry.quantities))}</td><td>${esc(formatQuantities(entry.quantities))}</td><td>${esc(entry.remarks || "-")}</td><td><button type="button" class="ghost small" data-action="edit-cutting" data-entry-id="${entry.id}">Edit</button></td></tr>`), 7, "No cutting entries recorded.");
+    <tr><td>${esc(entry.date)}</td><td>${esc(styleLabel(byId(entry.styleId)))}</td><td>${esc(entry.service || "-")}</td><td>${fmtInt(byId(entry.styleId)?.orderQty || 0)}</td><td>${fmtInt(sumObj(entry.quantities))}</td><td>${esc(formatQuantities(entry.quantities))}</td><td>${esc(entry.remarks || "-")}</td><td><button type="button" class="ghost small" data-action="edit-cutting" data-entry-id="${entry.id}">Edit</button> <button type="button" class="ghost small" data-action="delete-cutting" data-entry-id="${entry.id}">Delete</button></td></tr>`), 8, "No cutting entries recorded.");
 }
 
 function renderStyleProduction() {
   els.styleProductionEntriesTable.innerHTML = rowsOrEmpty(state.styleProductionEntries.slice().reverse().map((entry) => `
-    <tr><td>${esc(entry.date)}</td><td>${esc(styleLabel(byId(entry.styleId)))}</td><td>${fmtInt(sumObj(entry.quantities))}</td><td>${esc(formatQuantities(entry.quantities))}</td><td>${esc(entry.remarks || "-")}</td><td><button type="button" class="ghost small" data-action="edit-style-production" data-entry-id="${entry.id}">Edit</button></td></tr>`), 6, "No style production entries recorded.");
+    <tr><td>${esc(entry.date)}</td><td>${esc(styleLabel(byId(entry.styleId)))}</td><td>${fmtInt(entryProducedQty(entry))}</td><td>${esc(formatProductionQuantities(entry))}</td><td>${esc(entry.remarks || "-")}</td><td><button type="button" class="ghost small" data-action="edit-style-production" data-entry-id="${entry.id}">Edit</button> <button type="button" class="ghost small" data-action="delete-style-production" data-entry-id="${entry.id}">Delete</button></td></tr>`), 6, "No style production entries recorded.");
 }
 
 function renderProduction() {
   els.productionEntriesTable.innerHTML = rowsOrEmpty(state.productionEntries.slice().reverse().map((entry) => `
-    <tr><td>${esc(entry.date)}</td><td>${esc(styleLabel(byId(entry.styleId)))}</td><td>${esc(entry.operationName)}</td><td>${esc(entry.workerName)}</td><td>${esc(entry.size)}</td><td>${fmtInt(entry.quantity)}</td><td>${esc(entry.remarks || "-")}</td><td><button type="button" class="ghost small" data-action="edit-production" data-entry-id="${entry.id}">Edit</button></td></tr>`), 8, "No production entries recorded.");
+    <tr><td>${esc(entry.date)}</td><td>${esc(styleLabel(byId(entry.styleId)))}</td><td>${esc(entry.operationName)}</td><td>${esc(entry.workerName)}</td><td>${esc(entry.size)}</td><td>${fmtInt(entry.quantity)}</td><td>${esc(entry.remarks || "-")}</td><td><button type="button" class="ghost small" data-action="edit-production" data-entry-id="${entry.id}">Edit</button> <button type="button" class="ghost small" data-action="delete-production" data-entry-id="${entry.id}">Delete</button></td></tr>`), 8, "No production entries recorded.");
 }
 function renderAcceptance() {
   els.acceptanceEntriesTable.innerHTML = rowsOrEmpty(state.acceptanceEntries.slice().reverse().map((entry) => `
@@ -508,7 +520,7 @@ function renderAcceptance() {
 
 function renderDispatch() {
   els.dispatchEntriesTable.innerHTML = rowsOrEmpty(state.dispatchEntries.slice().reverse().map((entry) => `
-    <tr><td>${esc(entry.date)}</td><td>${esc(styleLabel(byId(entry.styleId)))}</td><td>${fmtInt(sumObj(entry.quantities))}</td><td>${esc(formatQuantities(entry.quantities))}</td><td>${esc(entry.remarks || "-")}</td><td><button type="button" class="ghost small" data-action="edit-dispatch" data-entry-id="${entry.id}">Edit</button></td></tr>`), 6, "No dispatch entries recorded.");
+    <tr><td>${esc(entry.date)}</td><td>${esc(styleLabel(byId(entry.styleId)))}</td><td>${fmtInt(sumObj(entry.quantities))}</td><td>${esc(formatQuantities(entry.quantities))}</td><td>${esc(entry.remarks || "-")}</td><td><button type="button" class="ghost small" data-action="edit-dispatch" data-entry-id="${entry.id}">Edit</button> <button type="button" class="ghost small" data-action="delete-dispatch" data-entry-id="${entry.id}">Delete</button></td></tr>`), 6, "No dispatch entries recorded.");
 }
 
 function renderDashboard() {
@@ -516,7 +528,7 @@ function renderDashboard() {
   els.dashboardStats.innerHTML = [
     ["Styles", state.styles.length],
     ["Cut Qty", state.cuttingEntries.reduce((s, e) => s + sumObj(e.quantities), 0)],
-    ["Produced Qty", state.styleProductionEntries.reduce((s, e) => s + sumObj(e.quantities), 0)],
+    ["Produced Qty", state.styleProductionEntries.reduce((s, e) => s + entryProducedQty(e), 0)],
     ["Billing (Rs)", totalBilling]
   ].map(([label, value]) => `<div class="stat-card"><p>${label}</p><strong>${fmt(value)}</strong></div>`).join("");
 
@@ -546,10 +558,11 @@ function renderReports() {
       <td>${r.image ? `<img class="report-thumb" src="${escAttr(r.image)}" alt="${escAttr(r.styleNumber)}" data-action="preview-image" data-image-src="${escAttr(r.image)}" data-image-title="${escAttr(r.styleNumber)}">` : "-"}</td>
       <td>${esc(r.styleNumber)}</td>
       <td>${esc(r.color || "-")}</td>
+      <td>${esc(r.service || "-")}</td>
       ${getSizes().map((size) => `<td>${fmtInt(r.quantities[size] || 0)}</td>`).join("")}
       <td>${fmtInt(r.totalQty)}</td>
       <td>${esc(r.remarks || "-")}</td>
-    </tr>`), getSizes().length + 6, "No cutting report for the selected date.");
+    </tr>`), getSizes().length + 7, "No cutting report for the selected date.");
 
   const dispatchRows = dispatchReportRows(getReportDateFilter());
   els.dispatchReportTable.innerHTML = rowsOrEmpty(dispatchRows.map((r) => `
@@ -572,13 +585,13 @@ function renderReports() {
 
 function renderCuttingReportHeader() {
   if (!els.cuttingReportHead) return;
-  els.cuttingReportHead.innerHTML = `<tr><th>Date</th><th>Photo</th><th>Style</th><th>Colour</th>${getSizes().map((size) => `<th>${esc(size)}</th>`).join("")}<th>Total Qty</th><th>Remarks</th></tr>`;
+  els.cuttingReportHead.innerHTML = `<tr><th>Date</th><th>Photo</th><th>Style</th><th>Colour</th><th>Service</th>${getSizes().map((size) => `<th>${esc(size)}</th>`).join("")}<th>Total Qty</th><th>Remarks</th></tr>`;
 }
 
 function styleBillingRows(reportDate = "") {
   return state.styles.map((style) => {
     const entries = state.styleProductionEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportDate));
-    const producedQty = entries.reduce((s, e) => s + sumObj(e.quantities), 0);
+    const producedQty = entries.reduce((s, e) => s + entryProducedQty(e), 0);
     const baseAmount = producedQty * num(style.cmtRate);
     const serviceChargePct = num(style.serviceChargePct);
     const serviceChargeAmount = baseAmount * serviceChargePct / 100;
@@ -611,7 +624,7 @@ function workerBillingRows() {
 function reconciliationRows(reportDate = "") {
   return state.styles.map((style) => {
     const cutQty = state.cuttingEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportDate)).reduce((s, e) => s + sumObj(e.quantities), 0);
-    const producedQty = state.styleProductionEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportDate)).reduce((s, e) => s + sumObj(e.quantities), 0);
+    const producedQty = state.styleProductionEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportDate)).reduce((s, e) => s + entryProducedQty(e), 0);
     const acceptedQty = state.acceptanceEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportDate)).reduce((s, e) => s + e.items.reduce((a, i) => a + i.accepted, 0), 0);
     const rejectedQty = state.acceptanceEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportDate)).reduce((s, e) => s + e.items.reduce((a, i) => a + i.rejected, 0), 0);
     return { styleNumber: style.styleNumber, cutQty, producedQty, acceptedQty, rejectedQty, balance: cutQty - acceptedQty };
@@ -642,6 +655,7 @@ function cuttingReportRows(reportDate = "") {
         image: style?.image || "",
         styleNumber: style?.styleNumber || "-",
         color: style?.color || "",
+        service: entry.service || "",
         quantities: getSizeQuantities(entry.quantities),
         totalQty: sumObj(entry.quantities),
         sizeWise: formatQuantities(entry.quantities),
@@ -713,8 +727,25 @@ function importData(e) {
 async function importStylesCsv(e) {
   const file = e.target.files?.[0];
   if (!file) return;
+  pendingStyleImportFile = file;
+  await importPendingStylesCsv();
+}
+
+async function importStylesCsvFromPendingSelection() {
+  if (!pendingStyleImportFile && !els.styleImportInput?.files?.[0]) return;
+  pendingStyleImportFile = pendingStyleImportFile || els.styleImportInput.files[0];
+  await importPendingStylesCsv();
+}
+
+async function importPendingStylesCsv() {
+  const file = pendingStyleImportFile;
+  if (!file) return;
   try {
     const rows = parseCsv(await file.text());
+    if (styleImportNeedsLocalImages(rows) && !els.styleImageImportInput?.files?.length) {
+      alert("This style CSV uses image file names. Please select those image files in 'Select Style Images' and the import will continue.");
+      return;
+    }
     const importedImageMap = await buildImportedImageMap(els.styleImageImportInput?.files);
     rows.forEach((row) => {
       const styleNumber = clean(row.styleNumber);
@@ -750,8 +781,16 @@ async function importStylesCsv(e) {
   } catch {
     alert("Could not import style CSV.");
   }
+  pendingStyleImportFile = null;
   els.styleImportInput.value = "";
   if (els.styleImageImportInput) els.styleImageImportInput.value = "";
+}
+
+function styleImportNeedsLocalImages(rows) {
+  return rows.some((row) => {
+    const imageValue = clean(row.image);
+    return imageValue && !isDirectImageSource(imageValue);
+  });
 }
 
 async function importCuttingCsv(e) {
@@ -766,6 +805,7 @@ async function importCuttingCsv(e) {
         id: uid(),
         date: clean(row.date),
         styleId: style.id,
+        service: clean(row.service),
         remarks: clean(row.remarks),
         quantities: sizeQuantitiesFromRow(row)
       });
@@ -805,6 +845,32 @@ async function importProductionCsv(e) {
     alert("Could not import production CSV.");
   }
   els.productionImportInput.value = "";
+}
+
+async function importStyleProductionCsv(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  try {
+    const rows = parseCsv(await file.text());
+    rows.forEach((row) => {
+      const style = findStyleByNumber(row.styleNumber, row.color);
+      if (!style) return;
+      const quantities = sizeQuantitiesFromRow(row);
+      state.styleProductionEntries.push({
+        id: uid(),
+        date: clean(row.date),
+        styleId: style.id,
+        totalQty: num(row.totalQty),
+        remarks: clean(row.remarks),
+        quantities
+      });
+    });
+    await persistState();
+    alert("Style production data imported successfully.");
+  } catch {
+    alert("Could not import style production CSV.");
+  }
+  if (els.styleProductionImportInput) els.styleProductionImportInput.value = "";
 }
 
 function parseCsv(text) {
@@ -919,21 +985,24 @@ function hasStyleTransactions(styleId) {
 }
 
 function handleCuttingTableAction(e) {
-  const button = e.target.closest("[data-action='edit-cutting']");
+  const button = e.target.closest("[data-action]");
   if (!button) return;
-  editCutting(button.dataset.entryId);
+  if (button.dataset.action === "edit-cutting") editCutting(button.dataset.entryId);
+  if (button.dataset.action === "delete-cutting") void deleteEntry("cuttingEntries", button.dataset.entryId, "cutting entry");
 }
 
 function handleStyleProductionTableAction(e) {
-  const button = e.target.closest("[data-action='edit-style-production']");
+  const button = e.target.closest("[data-action]");
   if (!button) return;
-  editStyleProduction(button.dataset.entryId);
+  if (button.dataset.action === "edit-style-production") editStyleProduction(button.dataset.entryId);
+  if (button.dataset.action === "delete-style-production") void deleteEntry("styleProductionEntries", button.dataset.entryId, "style production entry");
 }
 
 function handleProductionTableAction(e) {
-  const button = e.target.closest("[data-action='edit-production']");
+  const button = e.target.closest("[data-action]");
   if (!button) return;
-  editProduction(button.dataset.entryId);
+  if (button.dataset.action === "edit-production") editProduction(button.dataset.entryId);
+  if (button.dataset.action === "delete-production") void deleteEntry("productionEntries", button.dataset.entryId, "production entry");
 }
 
 function handleAcceptanceTableAction(e) {
@@ -943,9 +1012,19 @@ function handleAcceptanceTableAction(e) {
 }
 
 function handleDispatchTableAction(e) {
-  const button = e.target.closest("[data-action='edit-dispatch']");
+  const button = e.target.closest("[data-action]");
   if (!button) return;
-  editDispatch(button.dataset.entryId);
+  if (button.dataset.action === "edit-dispatch") editDispatch(button.dataset.entryId);
+  if (button.dataset.action === "delete-dispatch") void deleteEntry("dispatchEntries", button.dataset.entryId, "dispatch entry");
+}
+
+async function deleteEntry(collectionName, entryId, label) {
+  const entry = state[collectionName]?.find((item) => item.id === entryId);
+  if (!entry) return;
+  const confirmed = window.confirm(`Delete this ${label}?`);
+  if (!confirmed) return;
+  state[collectionName] = state[collectionName].filter((item) => item.id !== entryId);
+  await persistState();
 }
 
 function editCutting(entryId) {
@@ -954,6 +1033,7 @@ function editCutting(entryId) {
   els.cuttingForm.dataset.editId = entry.id;
   els.cuttingForm.date.value = entry.date || "";
   els.cuttingForm.styleId.value = entry.styleId || "";
+  els.cuttingForm.service.value = entry.service || "";
   els.cuttingForm.remarks.value = entry.remarks || "";
   fillSizeQuantities(els.cuttingSizeRows, "cut_", entry.quantities);
   els.cuttingForm.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -965,6 +1045,7 @@ function editStyleProduction(entryId) {
   els.styleProductionForm.dataset.editId = entry.id;
   els.styleProductionForm.date.value = entry.date || "";
   els.styleProductionForm.styleId.value = entry.styleId || "";
+  els.styleProductionForm.totalQty.value = entry.totalQty || "";
   els.styleProductionForm.remarks.value = entry.remarks || "";
   fillSizeQuantities(els.styleProductionSizeRows, "styleProd_", entry.quantities);
   els.styleProductionForm.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1057,6 +1138,17 @@ function digitsOnly(value) {
 
 function formatQuantities(quantities = {}) {
   return Object.entries(quantities).filter(([, qty]) => num(qty) > 0).map(([size, qty]) => `${size}: ${fmtInt(qty)}`).join(", ") || "-";
+}
+
+function formatProductionQuantities(entry = {}) {
+  const sizeWise = formatQuantities(entry.quantities);
+  if (sizeWise !== "-") return sizeWise;
+  return num(entry.totalQty) > 0 ? `Total only: ${fmtInt(entry.totalQty)}` : "-";
+}
+
+function entryProducedQty(entry = {}) {
+  const sizeWiseTotal = sumObj(entry.quantities);
+  return sizeWiseTotal > 0 ? sizeWiseTotal : num(entry.totalQty);
 }
 
 function formatAcceptanceItems(items = []) {
@@ -1165,7 +1257,7 @@ function resolveImportedImage(imageValue, importedImageMap) {
   for (const key of lookupKeys) {
     if (importedImageMap.has(key)) return importedImageMap.get(key);
   }
-  return rawValue;
+  return "";
 }
 
 function isDirectImageSource(value) {
@@ -1251,6 +1343,10 @@ function buildSectionAccessUrl(section, code) {
   return url.toString();
 }
 
+function isSharedSectionTabAllowed(tabId) {
+  return !activeSharedSection || tabId === "dashboard" || tabId === "reports" || tabId === activeSharedSection;
+}
+
 function applySharedSectionAccess() {
   const url = new URL(window.location.href);
   const requestedSection = clean(url.searchParams.get("section"));
@@ -1267,23 +1363,35 @@ function applySharedSectionAccess() {
     return;
   }
   activeSharedSection = requestedSection;
+  if (els.sidebar) els.sidebar.classList.toggle("shared-mode", true);
+  els.sidebarCards.forEach((card) => {
+    card.hidden = true;
+  });
   els.navLinks.forEach((btn) => {
-    const allowed = btn.dataset.tab === requestedSection;
+    const allowed = isSharedSectionTabAllowed(btn.dataset.tab);
     btn.hidden = !allowed;
+    btn.style.display = allowed ? "" : "none";
   });
   els.panels.forEach((panel) => {
-    const allowed = panel.id === requestedSection;
+    const allowed = isSharedSectionTabAllowed(panel.id);
     panel.hidden = !allowed;
+    panel.style.display = allowed ? "" : "none";
   });
   activateTab(requestedSection);
 }
 
 function clearSharedSectionAccess() {
+  if (els.sidebar) els.sidebar.classList.toggle("shared-mode", false);
+  els.sidebarCards.forEach((card) => {
+    card.hidden = false;
+  });
   els.navLinks.forEach((btn) => {
     btn.hidden = false;
+    btn.style.display = "";
   });
   els.panels.forEach((panel) => {
     panel.hidden = false;
+    panel.style.display = "";
   });
   const activeButton = [...els.navLinks].find((btn) => btn.classList.contains("active")) || els.navLinks[0];
   if (activeButton) activateTab(activeButton.dataset.tab);
@@ -1315,8 +1423,14 @@ function normalizeState() {
     serviceChargePct: num(style.serviceChargePct),
     operations: Array.isArray(style.operations) ? style.operations : []
   }));
-  state.cuttingEntries = Array.isArray(state.cuttingEntries) ? state.cuttingEntries : [];
-  state.styleProductionEntries = Array.isArray(state.styleProductionEntries) ? state.styleProductionEntries : [];
+  state.cuttingEntries = (Array.isArray(state.cuttingEntries) ? state.cuttingEntries : []).map((entry) => ({
+    ...entry,
+    service: clean(entry.service)
+  }));
+  state.styleProductionEntries = (Array.isArray(state.styleProductionEntries) ? state.styleProductionEntries : []).map((entry) => ({
+    ...entry,
+    totalQty: num(entry.totalQty)
+  }));
   state.productionEntries = Array.isArray(state.productionEntries) ? state.productionEntries : [];
   state.acceptanceEntries = Array.isArray(state.acceptanceEntries) ? state.acceptanceEntries : [];
   state.dispatchEntries = Array.isArray(state.dispatchEntries) ? state.dispatchEntries : [];
@@ -1365,6 +1479,7 @@ async function downloadCuttingReport() {
     { header: "Photo", key: "photo", width: 16 },
     { header: "Style", key: "styleNumber", width: 18 },
     { header: "Colour", key: "color", width: 16 },
+    { header: "Service", key: "service", width: 18 },
     ...sizeColumns.map((size) => ({ header: size, key: `size_${size}`, width: 10 })),
     { header: "Total Qty", key: "totalQty", width: 12 },
     { header: "Remarks", key: "remarks", width: 24 }
@@ -1375,6 +1490,7 @@ async function downloadCuttingReport() {
       date: row.date,
       styleNumber: row.styleNumber,
       color: row.color || "",
+      service: row.service || "",
       ...Object.fromEntries(sizeColumns.map((size) => [`size_${size}`, row.quantities[size] || 0])),
       totalQty: row.totalQty,
       remarks: row.remarks || ""
@@ -1384,6 +1500,23 @@ async function downloadCuttingReport() {
   }
   finalizeWorksheet(sheet);
   await downloadWorkbook(`cutting-report-${reportDate || "all-dates"}.xlsx`, workbook);
+}
+
+async function downloadInternalChallan() {
+  const reportDate = getReportDateFilter();
+  const rows = cuttingReportRows(reportDate);
+  if (!rows.length) {
+    alert("No cutting entries found for internal challan.");
+    return;
+  }
+  const pdf = createPdfDocumentOrAlert();
+  if (!pdf) return;
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (index > 0) pdf.addPage([148, 210], "portrait");
+    await buildInternalChallanPdfPage(pdf, row, index + 1);
+  }
+  pdf.save(`internal-challan-${reportDate || "all-dates"}.pdf`);
 }
 
 async function downloadFlowReport() {
@@ -1471,6 +1604,155 @@ function finalizeWorksheet(sheet) {
   sheet.eachRow((row) => {
     row.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
   });
+}
+
+function buildInternalChallanNumber(row, serialNumber) {
+  const styleCode = clean(row.styleNumber || "STYLE").replace(/[^a-z0-9]/gi, "").toUpperCase().slice(0, 8) || "STYLE";
+  const dateCode = clean(row.date || "").replace(/-/g, "") || "DATE";
+  return `${dateCode}-${styleCode}-${String(serialNumber).padStart(2, "0")}`;
+}
+
+function createPdfDocumentOrAlert() {
+  const jsPdfCtor = window.jspdf?.jsPDF;
+  if (!jsPdfCtor) {
+    alert("PDF export library could not load. Please refresh and try again.");
+    return null;
+  }
+  return new jsPdfCtor({
+    orientation: "portrait",
+    unit: "mm",
+    format: [148, 210]
+  });
+}
+
+async function buildInternalChallanPdfPage(pdf, row, serialNumber) {
+  const pageWidth = 148;
+  const pageHeight = 210;
+  const margin = 8;
+  const contentWidth = pageWidth - (margin * 2);
+  const leftColWidth = 88;
+  const rightColX = margin + leftColWidth + 4;
+  const challanNumber = buildInternalChallanNumber(row, serialNumber);
+  const quantities = getNonZeroQuantityPairs(row.quantities);
+
+  pdf.setDrawColor(185, 164, 140);
+  pdf.setLineWidth(0.4);
+  pdf.rect(4, 4, pageWidth - 8, pageHeight - 8);
+
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(14);
+  pdf.text("ENVOGUE CLOTHING", pageWidth / 2, 14, { align: "center" });
+  pdf.setFontSize(12);
+  pdf.text("Internal Challan", pageWidth / 2, 21, { align: "center" });
+
+  pdf.setFontSize(9);
+  pdf.text(`Challan No: ${challanNumber}`, margin, 29);
+  pdf.text(`Date: ${row.date || "-"}`, pageWidth - margin, 29, { align: "right" });
+
+  drawPdfFieldBox(pdf, margin, 34, contentWidth, 10, "Issue To", "Production Department");
+  drawPdfFieldBox(pdf, margin, 44, contentWidth, 10, "Purpose", "Stitching");
+  drawPdfFieldBox(pdf, margin, 54, leftColWidth, 10, "Style", row.styleNumber || "-");
+  drawPdfFieldBox(pdf, rightColX, 54, contentWidth - leftColWidth - 4, 10, "Colour", row.color || "-");
+  drawPdfFieldBox(pdf, margin, 64, leftColWidth, 10, "Service", row.service || "-");
+  drawPdfFieldBox(pdf, rightColX, 64, contentWidth - leftColWidth - 4, 10, "Total Qty", fmtInt(row.totalQty || 0));
+  drawPdfFieldBox(pdf, margin, 74, contentWidth, 12, "Remarks", row.remarks || "-");
+
+  const imageBottomY = await drawChallanImageBox(pdf, row.image, rightColX, 88, contentWidth - leftColWidth - 4, 36);
+
+  const tableTop = 88;
+  const tableWidth = leftColWidth;
+  pdf.setFillColor(143, 59, 32);
+  pdf.setTextColor(255, 255, 255);
+  pdf.rect(margin, tableTop, tableWidth, 8, "F");
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(9);
+  pdf.text("Size", margin + 10, tableTop + 5.4, { align: "center" });
+  pdf.text("Quantity", margin + tableWidth - 14, tableTop + 5.4, { align: "center" });
+  pdf.setTextColor(0, 0, 0);
+
+  let currentY = tableTop + 8;
+  if (quantities.length) {
+    quantities.forEach(([size, qty]) => {
+      pdf.rect(margin, currentY, tableWidth * 0.45, 7);
+      pdf.rect(margin + (tableWidth * 0.45), currentY, tableWidth * 0.55, 7);
+      pdf.setFont("helvetica", "normal");
+      pdf.text(String(size), margin + (tableWidth * 0.225), currentY + 4.6, { align: "center" });
+      pdf.text(fmtInt(qty), margin + (tableWidth * 0.45) + (tableWidth * 0.275), currentY + 4.6, { align: "center" });
+      currentY += 7;
+    });
+  } else {
+    pdf.rect(margin, currentY, tableWidth, 10);
+    pdf.text("No size-wise details", margin + (tableWidth / 2), currentY + 6, { align: "center" });
+    currentY += 10;
+  }
+
+  const signatureY = Math.max(currentY + 18, imageBottomY + 18, 175);
+  pdf.line(margin, signatureY, margin + 46, signatureY);
+  pdf.line(pageWidth - margin - 46, signatureY, pageWidth - margin, signatureY);
+  pdf.setFont("helvetica", "normal");
+  pdf.setFontSize(9);
+  pdf.text("Cutting Incharge Signature", margin + 23, signatureY + 5, { align: "center" });
+  pdf.text("Production Received By", pageWidth - margin - 23, signatureY + 5, { align: "center" });
+}
+
+function drawPdfFieldBox(pdf, x, y, width, height, label, value) {
+  pdf.rect(x, y, width, height);
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(8);
+  pdf.text(`${label}:`, x + 2, y + 3.8);
+  pdf.setFont("helvetica", "normal");
+  pdf.setFontSize(9);
+  const text = pdf.splitTextToSize(String(value || "-"), width - 4);
+  pdf.text(text, x + 2, y + 7.4);
+}
+
+async function drawChallanImageBox(pdf, source, x, y, width, height) {
+  pdf.rect(x, y, width, height);
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(8);
+  pdf.text("Image", x + 2, y + 4);
+
+  const imageData = await imageSourceToBase64(source);
+  if (!imageData) {
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(9);
+    pdf.text("No image", x + (width / 2), y + (height / 2) + 1, { align: "center" });
+    return y + height;
+  }
+
+  const imageType = imageData.startsWith("data:image/png") ? "PNG" : "JPEG";
+  const fit = await calculateImageFit(width - 4, height - 8, imageData);
+  pdf.addImage(imageData, imageType, x + 2 + fit.xOffset, y + 6 + fit.yOffset, fit.width, fit.height);
+  return y + height;
+}
+
+async function calculateImageFit(maxWidth, maxHeight, imageData) {
+  const { width: sourceWidth, height: sourceHeight } = await getImageDimensions(imageData);
+  const ratio = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight);
+  const width = Math.max(1, sourceWidth * ratio);
+  const height = Math.max(1, sourceHeight * ratio);
+  return {
+    width,
+    height,
+    xOffset: (maxWidth - width) / 2,
+    yOffset: (maxHeight - height) / 2
+  };
+}
+
+function getImageDimensions(imageData) {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve({
+      width: image.naturalWidth || 1,
+      height: image.naturalHeight || 1
+    });
+    image.onerror = () => resolve({ width: 1, height: 1 });
+    image.src = imageData;
+  });
+}
+
+function getNonZeroQuantityPairs(quantities = {}) {
+  return Object.entries(quantities).filter(([, qty]) => num(qty) > 0);
 }
 
 async function addWorksheetImage(sheet, source, rowNumber, columnNumber) {
