@@ -16,6 +16,7 @@ const DEFAULTS = {
   productionEntries: [],
   acceptanceEntries: [],
   dispatchEntries: [],
+  payments: [],
   settings: {
     sizes: DEFAULT_SIZE_LIST,
     accessCodes: {
@@ -91,12 +92,17 @@ const els = {
   cuttingReportTable: $("cuttingReportTable"),
   dispatchReportTable: $("dispatchReportTable"),
   operationCostTable: $("operationCostTable"),
-  reportDate: $("reportDate"),
+  reportStartDate: $("reportStartDate"),
+  reportEndDate: $("reportEndDate"),
+  reportRangeSummary: $("reportRangeSummary"),
   clearReportDate: $("clearReportDate"),
   downloadStyleAmountReport: $("downloadStyleAmountReport"),
+  downloadBillingPdf: $("downloadBillingPdf"),
   downloadCuttingReport: $("downloadCuttingReport"),
   downloadInternalChallan: $("downloadInternalChallan"),
   downloadFlowReport: $("downloadFlowReport"),
+  paymentForm: $("paymentForm"),
+  paymentHistoryTable: $("paymentHistoryTable"),
   exportBtn: $("exportBtn"),
   importInput: $("importInput"),
   styleImportInput: $("styleImportInput"),
@@ -185,6 +191,9 @@ function setToday() {
   els.productionForm.date.value = els.productionForm.date.value || today;
   els.acceptanceForm.date.value = els.acceptanceForm.date.value || today;
   els.dispatchForm.date.value = els.dispatchForm.date.value || today;
+  if (els.paymentForm?.elements?.paymentDate) {
+    els.paymentForm.elements.paymentDate.value = els.paymentForm.elements.paymentDate.value || today;
+  }
 }
 
 function buildSizeSelect() {
@@ -226,10 +235,14 @@ function bindForms() {
   els.productionForm.addEventListener("submit", saveProduction);
   els.acceptanceForm.addEventListener("submit", saveAcceptance);
   els.dispatchForm.addEventListener("submit", saveDispatch);
+  els.paymentForm?.addEventListener("submit", savePayment);
+  els.paymentForm?.addEventListener("input", syncPaymentFormTotal);
   els.productionStyleSelect.addEventListener("change", renderOperationSelect);
-  els.reportDate.addEventListener("change", renderReports);
+  els.reportStartDate?.addEventListener("change", renderReports);
+  els.reportEndDate?.addEventListener("change", renderReports);
   els.clearReportDate.addEventListener("click", clearReportDateFilter);
   els.downloadStyleAmountReport.addEventListener("click", downloadStyleAmountReport);
+  els.downloadBillingPdf?.addEventListener("click", downloadBillingPdf);
   els.downloadCuttingReport.addEventListener("click", downloadCuttingReport);
   els.downloadInternalChallan?.addEventListener("click", downloadInternalChallan);
   els.downloadFlowReport.addEventListener("click", downloadFlowReport);
@@ -242,6 +255,7 @@ function bindForms() {
   els.productionImportInput.addEventListener("change", importProductionCsv);
   els.pasteStyleImageBtn?.addEventListener("click", pasteStyleImageFromClipboard);
   bindStyleSearches();
+  els.paymentHistoryTable?.addEventListener("click", handlePaymentTableAction);
   els.closeImagePreview?.addEventListener("click", closeImagePreview);
   els.imagePreviewModal?.addEventListener("click", (e) => {
     if (e.target instanceof HTMLElement && e.target.dataset.closeImagePreview === "true") {
@@ -426,6 +440,48 @@ async function saveDispatch(e) {
   await persistState();
 }
 
+async function savePayment(e) {
+  e.preventDefault();
+  const reportRange = getReportDateFilter();
+  if (!reportRange.startDate || !reportRange.endDate) {
+    alert("Please select both From Date and To Date before saving payment.");
+    return;
+  }
+  const billingRows = styleBillingRows(reportRange);
+  if (!billingRows.length) {
+    alert("No billing rows found for the selected date range.");
+    return;
+  }
+
+  const f = new FormData(els.paymentForm);
+  const baseAmountPaid = num(f.get("baseAmountPaid"));
+  const serviceChargePaid = num(f.get("serviceChargePaid"));
+  const totalPaid = num(f.get("totalPaid"));
+  const existingIndex = state.payments.findIndex((payment) => isSameReportRange(payment, reportRange));
+  const payment = {
+    id: existingIndex >= 0 ? state.payments[existingIndex].id : uid(),
+    paymentDate: clean(f.get("paymentDate")),
+    startDate: reportRange.startDate,
+    endDate: reportRange.endDate,
+    styleIds: billingRows.map((row) => row.styleId),
+    baseAmountPaid,
+    serviceChargePaid,
+    totalPaid,
+    notes: clean(f.get("notes"))
+  };
+
+  if (!payment.paymentDate) {
+    alert("Please enter payment date.");
+    return;
+  }
+
+  if (existingIndex >= 0) state.payments[existingIndex] = payment;
+  else state.payments.push(payment);
+
+  await persistState();
+  alert(existingIndex >= 0 ? "Payment updated for the selected date range." : "Payment saved for the selected date range.");
+}
+
 function render() {
   renderStyleSelects();
   renderOperationSelect();
@@ -524,13 +580,19 @@ function renderDispatch() {
 }
 
 function renderDashboard() {
-  const totalBilling = styleBillingRows().reduce((s, r) => s + r.billing, 0);
+  const summary = dashboardSummary();
   els.dashboardStats.innerHTML = [
     ["Styles", state.styles.length],
-    ["Cut Qty", state.cuttingEntries.reduce((s, e) => s + sumObj(e.quantities), 0)],
-    ["Produced Qty", state.styleProductionEntries.reduce((s, e) => s + entryProducedQty(e), 0)],
-    ["Billing (Rs)", totalBilling]
-  ].map(([label, value]) => `<div class="stat-card"><p>${label}</p><strong>${fmt(value)}</strong></div>`).join("");
+    ["Total Order Qty", summary.totalOrderQty],
+    ["Total Cut Qty", summary.totalCutQty],
+    ["Total Make Qty", summary.totalMakeQty],
+    ["Total Dispatch Qty", summary.totalDispatchQty],
+    ["Total Billed (Rs)", summary.totalBilled],
+    ["Total Paid (Rs)", summary.totalPaid],
+    ["Service Charge Paid (Rs)", summary.totalServiceChargePaid],
+    ["Short Cut vs Order %", `${fmt(summary.shortCutPct)}%`],
+    ["Ship vs Make %", `${fmt(summary.shipAgainstMakePct)}%`]
+  ].map(([label, value]) => `<div class="stat-card"><p>${label}</p><strong>${value}</strong></div>`).join("");
 
   const billing = styleBillingRows();
   els.styleBillingTable.innerHTML = rowsOrEmpty(billing.map((r) => `
@@ -543,15 +605,42 @@ function renderDashboard() {
 
 function renderReports() {
   renderCuttingReportHeader();
-  const styleAmounts = styleBillingRows(getReportDateFilter());
-  els.styleAmountReportTable.innerHTML = rowsOrEmpty(styleAmounts.map((r) => `
-    <tr><td>${esc(r.dateLabel)}</td><td>${esc(r.styleNumber)}</td><td>${esc(r.color || "-")}</td><td>${fmtInt(r.producedQty)}</td><td>Rs ${fmt(r.cmtRate)}</td><td>${fmt(r.serviceChargePct)}%</td><td>Rs ${fmt(r.serviceChargeAmount)}</td><td>Rs ${fmt(r.billing)}</td></tr>`), 8, "No style amount report for the selected date.");
+  const reportRange = getReportDateFilter();
+  const rangeSummary = reportRange.startDate && reportRange.endDate
+    ? `Showing report dates from ${formatDateDisplay(reportRange.startDate)} to ${formatDateDisplay(reportRange.endDate)}.`
+    : reportRange.startDate
+      ? `Showing report dates from ${formatDateDisplay(reportRange.startDate)} onwards.`
+      : reportRange.endDate
+        ? `Showing report dates up to ${formatDateDisplay(reportRange.endDate)}.`
+        : "Showing all report dates.";
+  if (els.reportRangeSummary) {
+    els.reportRangeSummary.textContent = rangeSummary;
+  }
 
-  const reconciliation = reconciliationRows(getReportDateFilter());
+  const styleAmounts = styleBillingRows(reportRange);
+  els.styleAmountReportTable.innerHTML = rowsOrEmpty(styleAmounts.map((r) => `
+    <tr>
+      <td>${esc(r.dateLabel)}</td>
+      <td>${esc(r.styleNumber)}</td>
+      <td>${esc(r.color || "-")}</td>
+      <td>${fmtInt(r.orderQty)}</td>
+      <td>${fmtInt(r.cutQty)}</td>
+      <td>${fmtInt(r.producedQty)}</td>
+      <td>${fmtInt(r.dispatchQty)}</td>
+      <td>${esc(r.cutVsMakeSummary)}</td>
+      <td>${esc(r.makeVsDispatchSummary)}</td>
+      <td>Rs ${fmt(r.cmtRate)}</td>
+      <td>Rs ${fmt(r.baseAmount)}</td>
+      <td>Rs ${fmt(r.serviceChargeAmount)}</td>
+      <td>Rs ${fmt(r.billing)}</td>
+      <td><span class="status-chip ${r.paymentStatusClass}">${esc(r.paymentStatusLabel)}</span></td>
+    </tr>`), 14, "No style amount report for the selected date range.");
+
+  const reconciliation = reconciliationRows(reportRange);
   els.reconciliationTable.innerHTML = rowsOrEmpty(reconciliation.map((r) => `
     <tr><td>${esc(r.styleNumber)}</td><td>${fmtInt(r.cutQty)}</td><td>${fmtInt(r.producedQty)}</td><td>${fmtInt(r.acceptedQty)}</td><td>${fmtInt(r.rejectedQty)}</td><td class="${r.balance < 0 ? "text-danger" : "text-success"}">${fmtInt(r.balance)}</td></tr>`), 6, "No reconciliation data yet.");
 
-  const cuttingRows = cuttingReportRows(getReportDateFilter());
+  const cuttingRows = cuttingReportRows(reportRange);
   els.cuttingReportTable.innerHTML = rowsOrEmpty(cuttingRows.map((r) => `
     <tr>
       <td>${esc(r.date)}</td>
@@ -562,9 +651,9 @@ function renderReports() {
       ${getSizes().map((size) => `<td>${fmtInt(r.quantities[size] || 0)}</td>`).join("")}
       <td>${fmtInt(r.totalQty)}</td>
       <td>${esc(r.remarks || "-")}</td>
-    </tr>`), getSizes().length + 7, "No cutting report for the selected date.");
+    </tr>`), getSizes().length + 7, "No cutting report for the selected date range.");
 
-  const dispatchRows = dispatchReportRows(getReportDateFilter());
+  const dispatchRows = dispatchReportRows(reportRange);
   els.dispatchReportTable.innerHTML = rowsOrEmpty(dispatchRows.map((r) => `
     <tr>
       <td>${r.image ? `<img class="report-thumb" src="${escAttr(r.image)}" alt="${escAttr(r.styleNumber)}" data-action="preview-image" data-image-src="${escAttr(r.image)}" data-image-title="${escAttr(r.styleNumber)}">` : "-"}</td>
@@ -578,9 +667,12 @@ function renderReports() {
       <td class="${r.balance < 0 ? "text-danger" : "text-success"}">${fmtInt(r.balance)}</td>
     </tr>`), 9, "No size-wise dispatch details yet.");
 
-  const ops = operationCostRows(getReportDateFilter());
+  const ops = operationCostRows(reportRange);
   els.operationCostTable.innerHTML = rowsOrEmpty(ops.map((r) => `
-    <tr><td>${esc(r.styleNumber)}</td><td>${esc(r.operationName)}</td><td>${fmtInt(r.quantity)}</td><td>Rs ${fmt(r.rate)}</td><td>Rs ${fmt(r.amount)}</td></tr>`), 5, "No operation costing yet.");
+<tr><td>${esc(r.styleNumber)}</td><td>${esc(r.operationName)}</td><td>${fmtInt(r.quantity)}</td><td>Rs ${fmt(r.rate)}</td><td>Rs ${fmt(r.amount)}</td></tr>`), 5, "No operation costing yet.");
+
+  renderPaymentHistory();
+  populatePaymentFormForCurrentRange(styleAmounts, reportRange);
 }
 
 function renderCuttingReportHeader() {
@@ -589,24 +681,43 @@ function renderCuttingReportHeader() {
 }
 
 function styleBillingRows(reportDate = "") {
+  const reportRange = normalizeReportRangeInput(reportDate);
+  const rangePayment = getRangePaymentOverview(reportRange);
   return state.styles.map((style) => {
-    const entries = state.styleProductionEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportDate));
+    const cutQty = state.cuttingEntries
+      .filter((e) => e.styleId === style.id && matchesDate(e.date, reportRange))
+      .reduce((s, e) => s + sumObj(e.quantities), 0);
+    const entries = state.styleProductionEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportRange));
     const producedQty = entries.reduce((s, e) => s + entryProducedQty(e), 0);
+    const dispatchQty = state.dispatchEntries
+      .filter((e) => e.styleId === style.id && matchesDate(e.date, reportRange))
+      .reduce((s, e) => s + sumObj(e.quantities), 0);
     const baseAmount = producedQty * num(style.cmtRate);
     const serviceChargePct = num(style.serviceChargePct);
     const serviceChargeAmount = baseAmount * serviceChargePct / 100;
+    const paymentStatus = getStylePaymentStatus(style.id, rangePayment);
     return {
+      styleId: style.id,
       styleNumber: style.styleNumber,
       color: style.color,
+      image: style.image || "",
+      orderQty: num(style.orderQty),
+      cutQty,
       producedQty,
+      dispatchQty,
       acceptedQty: producedQty,
       cmtRate: num(style.cmtRate),
+      baseAmount,
       serviceChargePct,
       serviceChargeAmount,
       billing: baseAmount + serviceChargeAmount,
-      dateLabel: reportDate || "All Dates"
+      cutVsMakeSummary: buildSynopsis(cutQty, producedQty),
+      makeVsDispatchSummary: buildSynopsis(producedQty, dispatchQty),
+      dateLabel: getReportRangeLabel(reportRange),
+      paymentStatusLabel: paymentStatus.label,
+      paymentStatusClass: paymentStatus.className
     };
-  }).filter((row) => row.producedQty > 0 || !reportDate);
+  }).filter((row) => row.cutQty > 0 || row.producedQty > 0 || row.dispatchQty > 0 || (!reportRange.startDate && !reportRange.endDate));
 }
 
 function workerBillingRows() {
@@ -622,18 +733,20 @@ function workerBillingRows() {
 }
 
 function reconciliationRows(reportDate = "") {
+  const reportRange = normalizeReportRangeInput(reportDate);
   return state.styles.map((style) => {
-    const cutQty = state.cuttingEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportDate)).reduce((s, e) => s + sumObj(e.quantities), 0);
-    const producedQty = state.styleProductionEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportDate)).reduce((s, e) => s + entryProducedQty(e), 0);
-    const acceptedQty = state.acceptanceEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportDate)).reduce((s, e) => s + e.items.reduce((a, i) => a + i.accepted, 0), 0);
-    const rejectedQty = state.acceptanceEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportDate)).reduce((s, e) => s + e.items.reduce((a, i) => a + i.rejected, 0), 0);
+    const cutQty = state.cuttingEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportRange)).reduce((s, e) => s + sumObj(e.quantities), 0);
+    const producedQty = state.styleProductionEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportRange)).reduce((s, e) => s + entryProducedQty(e), 0);
+    const acceptedQty = state.acceptanceEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportRange)).reduce((s, e) => s + e.items.reduce((a, i) => a + i.accepted, 0), 0);
+    const rejectedQty = state.acceptanceEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportRange)).reduce((s, e) => s + e.items.reduce((a, i) => a + i.rejected, 0), 0);
     return { styleNumber: style.styleNumber, cutQty, producedQty, acceptedQty, rejectedQty, balance: cutQty - acceptedQty };
-  }).filter((row) => row.cutQty || row.producedQty || row.acceptedQty || row.rejectedQty || !reportDate);
+  }).filter((row) => row.cutQty || row.producedQty || row.acceptedQty || row.rejectedQty || (!reportRange.startDate && !reportRange.endDate));
 }
 
 function operationCostRows(reportDate = "") {
+  const reportRange = normalizeReportRangeInput(reportDate);
   const map = new Map();
-  state.productionEntries.filter((e) => matchesDate(e.date, reportDate)).forEach((e) => {
+  state.productionEntries.filter((e) => matchesDate(e.date, reportRange)).forEach((e) => {
     const key = `${e.styleId}__${e.operationName}`;
     const row = map.get(key) || { styleNumber: byId(e.styleId)?.styleNumber || "-", operationName: e.operationName, quantity: 0, rate: num(e.operationRate), amount: 0 };
     row.quantity += num(e.quantity);
@@ -644,8 +757,9 @@ function operationCostRows(reportDate = "") {
 }
 
 function cuttingReportRows(reportDate = "") {
+  const reportRange = normalizeReportRangeInput(reportDate);
   return state.cuttingEntries
-    .filter((entry) => matchesDate(entry.date, reportDate))
+    .filter((entry) => matchesDate(entry.date, reportRange))
     .slice()
     .sort((a, b) => clean(b.date).localeCompare(clean(a.date)))
     .map((entry) => {
@@ -665,19 +779,20 @@ function cuttingReportRows(reportDate = "") {
 }
 
 function dispatchReportRows(reportDate = "") {
+  const reportRange = normalizeReportRangeInput(reportDate);
   const rows = [];
   state.styles.forEach((style) => {
     getSizes().forEach((size) => {
       const cutQty = state.cuttingEntries
-        .filter((entry) => entry.styleId === style.id && matchesDate(entry.date, reportDate))
+        .filter((entry) => entry.styleId === style.id && matchesDate(entry.date, reportRange))
         .reduce((sum, entry) => sum + num(entry.quantities?.[size]), 0);
       const makeQty = state.styleProductionEntries
-        .filter((entry) => entry.styleId === style.id && matchesDate(entry.date, reportDate))
+        .filter((entry) => entry.styleId === style.id && matchesDate(entry.date, reportRange))
         .reduce((sum, entry) => sum + num(entry.quantities?.[size]), 0);
       const dispatchQty = state.dispatchEntries
-        .filter((entry) => entry.styleId === style.id && matchesDate(entry.date, reportDate))
+        .filter((entry) => entry.styleId === style.id && matchesDate(entry.date, reportRange))
         .reduce((sum, entry) => sum + num(entry.quantities?.[size]), 0);
-      if (!cutQty && !makeQty && !dispatchQty && reportDate) return;
+      if (!cutQty && !makeQty && !dispatchQty && (reportRange.startDate || reportRange.endDate)) return;
       if (!cutQty && !makeQty && !dispatchQty) return;
       const amount = (makeQty * num(style.cmtRate)) + ((makeQty * num(style.cmtRate) * num(style.serviceChargePct)) / 100);
       rows.push({
@@ -694,6 +809,201 @@ function dispatchReportRows(reportDate = "") {
     });
   });
   return rows.sort((a, b) => `${a.styleNumber}${a.color}${a.size}`.localeCompare(`${b.styleNumber}${b.color}${b.size}`));
+}
+
+function dashboardSummary() {
+  const totalOrderQty = state.styles.reduce((sum, style) => sum + num(style.orderQty), 0);
+  const totalCutQty = state.cuttingEntries.reduce((sum, entry) => sum + sumObj(entry.quantities), 0);
+  const totalMakeQty = state.styleProductionEntries.reduce((sum, entry) => sum + entryProducedQty(entry), 0);
+  const totalDispatchQty = state.dispatchEntries.reduce((sum, entry) => sum + sumObj(entry.quantities), 0);
+  const totalBilled = styleBillingRows().reduce((sum, row) => sum + row.billing, 0);
+  const totalPaid = state.payments.reduce((sum, payment) => sum + num(payment.totalPaid), 0);
+  const totalServiceChargePaid = state.payments.reduce((sum, payment) => sum + num(payment.serviceChargePaid), 0);
+  return {
+    totalOrderQty,
+    totalCutQty,
+    totalMakeQty,
+    totalDispatchQty,
+    totalBilled,
+    totalPaid,
+    totalServiceChargePaid,
+    shortCutPct: totalOrderQty ? (Math.max(totalOrderQty - totalCutQty, 0) / totalOrderQty) * 100 : 0,
+    shipAgainstMakePct: totalMakeQty ? (totalDispatchQty / totalMakeQty) * 100 : 0
+  };
+}
+
+function renderPaymentHistory() {
+  if (!els.paymentHistoryTable) return;
+  const rows = state.payments
+    .slice()
+    .sort((a, b) => `${clean(b.paymentDate)}${clean(b.endDate)}`.localeCompare(`${clean(a.paymentDate)}${clean(a.endDate)}`))
+    .map((payment) => {
+      const styleLabels = payment.styleIds?.map((styleId) => byId(styleId)?.styleNumber).filter(Boolean).join(", ") || "-";
+      return `
+        <tr>
+          <td>${esc(formatDateDisplay(payment.paymentDate))}</td>
+          <td>${esc(getReportRangeLabel(payment))}</td>
+          <td>${esc(styleLabels)}</td>
+          <td>Rs ${fmt(payment.baseAmountPaid)}</td>
+          <td>Rs ${fmt(payment.serviceChargePaid)}</td>
+          <td>Rs ${fmt(payment.totalPaid)}</td>
+          <td>${esc(payment.notes || "-")}</td>
+          <td><button type="button" class="ghost small" data-action="delete-payment" data-entry-id="${payment.id}">Delete</button></td>
+        </tr>`;
+    });
+  els.paymentHistoryTable.innerHTML = rowsOrEmpty(rows, 8, "No payment entries recorded.");
+}
+
+function populatePaymentFormForCurrentRange(styleAmounts, reportRange) {
+  if (!els.paymentForm) return;
+  const payment = paymentRecordForRange(reportRange);
+  const totals = styleAmounts.reduce((sum, row) => {
+    sum.baseAmount += row.baseAmount;
+    sum.serviceChargeAmount += row.serviceChargeAmount;
+    sum.totalBill += row.billing;
+    return sum;
+  }, { baseAmount: 0, serviceChargeAmount: 0, totalBill: 0 });
+
+  const paymentDateField = els.paymentForm.elements.paymentDate;
+  const notesField = els.paymentForm.elements.notes;
+  const baseAmountField = els.paymentForm.elements.baseAmountPaid;
+  const serviceChargeField = els.paymentForm.elements.serviceChargePaid;
+  const totalPaidField = els.paymentForm.elements.totalPaid;
+
+  if (paymentDateField && !clean(paymentDateField.value)) {
+    paymentDateField.value = new Date().toISOString().slice(0, 10);
+  }
+
+  if (payment) {
+    if (paymentDateField) paymentDateField.value = payment.paymentDate || paymentDateField.value;
+    if (notesField) notesField.value = payment.notes || "";
+    if (baseAmountField) baseAmountField.value = payment.baseAmountPaid || 0;
+    if (serviceChargeField) serviceChargeField.value = payment.serviceChargePaid || 0;
+    if (totalPaidField) totalPaidField.value = payment.totalPaid || 0;
+    return;
+  }
+
+  if (notesField) notesField.value = "";
+  if (baseAmountField) baseAmountField.value = totals.baseAmount ? totals.baseAmount.toFixed(2) : "0.00";
+  if (serviceChargeField) serviceChargeField.value = totals.serviceChargeAmount ? totals.serviceChargeAmount.toFixed(2) : "0.00";
+  if (totalPaidField) totalPaidField.value = totals.totalBill ? totals.totalBill.toFixed(2) : "0.00";
+}
+
+function syncPaymentFormTotal() {
+  if (!els.paymentForm) return;
+  const target = document.activeElement;
+  const totalField = els.paymentForm.elements.totalPaid;
+  if (!totalField || target === totalField) return;
+  const baseAmount = num(els.paymentForm.elements.baseAmountPaid?.value);
+  const serviceCharge = num(els.paymentForm.elements.serviceChargePaid?.value);
+  totalField.value = (baseAmount + serviceCharge).toFixed(2);
+}
+
+function normalizeReportRangeInput(value = {}) {
+  if (typeof value === "string") {
+    const dateValue = clean(value);
+    return { startDate: dateValue, endDate: dateValue };
+  }
+  const startDate = clean(value.startDate);
+  const endDate = clean(value.endDate);
+  if (startDate && endDate && startDate > endDate) {
+    return { startDate: endDate, endDate: startDate };
+  }
+  return { startDate, endDate };
+}
+
+function getReportRangeLabel(range = {}) {
+  const normalized = normalizeReportRangeInput(range);
+  if (normalized.startDate && normalized.endDate) {
+    return `${formatDateDisplay(normalized.startDate)} to ${formatDateDisplay(normalized.endDate)}`;
+  }
+  if (normalized.startDate) return `From ${formatDateDisplay(normalized.startDate)}`;
+  if (normalized.endDate) return `Up to ${formatDateDisplay(normalized.endDate)}`;
+  return "All Dates";
+}
+
+function formatReportRangeForFilename(range = {}) {
+  const normalized = normalizeReportRangeInput(range);
+  if (normalized.startDate && normalized.endDate) {
+    return `${normalized.startDate}_to_${normalized.endDate}`;
+  }
+  if (normalized.startDate) return `from_${normalized.startDate}`;
+  if (normalized.endDate) return `upto_${normalized.endDate}`;
+  return "all-dates";
+}
+
+function formatDateDisplay(value) {
+  const text = clean(value);
+  if (!text) return "-";
+  const [year, month, day] = text.split("-");
+  if (!year || !month || !day) return text;
+  return `${day}/${month}/${year}`;
+}
+
+function buildSynopsis(leftQty, rightQty) {
+  const difference = num(leftQty) - num(rightQty);
+  const label = difference === 0 ? "Balanced" : difference > 0 ? "Short" : "Excess";
+  return `${fmtInt(leftQty)} / ${fmtInt(rightQty)} (${label} ${fmtInt(Math.abs(difference))})`;
+}
+
+function formatBillingPdfCell(key, row) {
+  switch (key) {
+    case "orderQty":
+    case "cutQty":
+    case "producedQty":
+    case "dispatchQty":
+      return fmtInt(row[key]);
+    case "cmtRate":
+    case "baseAmount":
+    case "serviceChargeAmount":
+    case "billing":
+      return `Rs ${fmt(row[key])}`;
+    default:
+      return String(row[key] ?? "-");
+  }
+}
+
+function paymentRecordForRange(range = {}) {
+  const normalized = normalizeReportRangeInput(range);
+  if (!normalized.startDate || !normalized.endDate) return null;
+  return state.payments.find((payment) => isSameReportRange(payment, normalized)) || null;
+}
+
+function getRangePaymentOverview(range = {}) {
+  const payment = paymentRecordForRange(range);
+  const normalized = normalizeReportRangeInput(range);
+  const totalBill = state.styles.reduce((sum, style) => {
+    const producedQty = state.styleProductionEntries
+      .filter((entry) => entry.styleId === style.id && matchesDate(entry.date, normalized))
+      .reduce((entrySum, entry) => entrySum + entryProducedQty(entry), 0);
+    const baseAmount = producedQty * num(style.cmtRate);
+    const serviceAmount = baseAmount * num(style.serviceChargePct) / 100;
+    return sum + baseAmount + serviceAmount;
+  }, 0);
+  return {
+    payment,
+    totalBill,
+    isFullyPaid: Boolean(payment) && num(payment.totalPaid) >= totalBill && totalBill > 0,
+    isPartPaid: Boolean(payment) && num(payment.totalPaid) > 0 && num(payment.totalPaid) < totalBill
+  };
+}
+
+function isSameReportRange(payment = {}, range = {}) {
+  const normalized = normalizeReportRangeInput(range);
+  return clean(payment.startDate) === normalized.startDate && clean(payment.endDate) === normalized.endDate;
+}
+
+function getStylePaymentStatus(styleId, paymentOverview) {
+  if (!paymentOverview?.payment) {
+    return { label: "Pending", className: "pending" };
+  }
+  if (!paymentOverview.payment.styleIds?.includes(styleId)) {
+    return { label: "Pending", className: "pending" };
+  }
+  if (paymentOverview.isPartPaid) {
+    return { label: "Part Paid", className: "pending" };
+  }
+  return { label: "Paid", className: "paid" };
 }
 
 function exportData() {
@@ -1016,6 +1326,12 @@ function handleDispatchTableAction(e) {
   if (!button) return;
   if (button.dataset.action === "edit-dispatch") editDispatch(button.dataset.entryId);
   if (button.dataset.action === "delete-dispatch") void deleteEntry("dispatchEntries", button.dataset.entryId, "dispatch entry");
+}
+
+function handlePaymentTableAction(e) {
+  const button = e.target.closest("[data-action='delete-payment']");
+  if (!button) return;
+  void deleteEntry("payments", button.dataset.entryId, "payment entry");
 }
 
 async function deleteEntry(collectionName, entryId, label) {
@@ -1434,40 +1750,187 @@ function normalizeState() {
   state.productionEntries = Array.isArray(state.productionEntries) ? state.productionEntries : [];
   state.acceptanceEntries = Array.isArray(state.acceptanceEntries) ? state.acceptanceEntries : [];
   state.dispatchEntries = Array.isArray(state.dispatchEntries) ? state.dispatchEntries : [];
+  state.payments = (Array.isArray(state.payments) ? state.payments : []).map((payment) => ({
+    ...payment,
+    styleIds: Array.isArray(payment.styleIds) ? payment.styleIds : [],
+    baseAmountPaid: num(payment.baseAmountPaid),
+    serviceChargePaid: num(payment.serviceChargePaid),
+    totalPaid: num(payment.totalPaid)
+  }));
 }
 
 function getReportDateFilter() {
-  return clean(els.reportDate.value);
+  return normalizeReportRangeInput({
+    startDate: clean(els.reportStartDate?.value),
+    endDate: clean(els.reportEndDate?.value)
+  });
 }
 
 function clearReportDateFilter() {
-  els.reportDate.value = "";
+  if (els.reportStartDate) els.reportStartDate.value = "";
+  if (els.reportEndDate) els.reportEndDate.value = "";
   renderReports();
 }
 
 function matchesDate(entryDate, reportDate) {
-  return !reportDate || clean(entryDate) === reportDate;
+  const range = normalizeReportRangeInput(reportDate);
+  const dateValue = clean(entryDate);
+  if (!dateValue) return false;
+  if (range.startDate && dateValue < range.startDate) return false;
+  if (range.endDate && dateValue > range.endDate) return false;
+  return true;
 }
 
 function downloadStyleAmountReport() {
   const reportDate = getReportDateFilter();
   const rows = styleBillingRows(reportDate);
   if (!rows.length) {
-    alert("No style amount report found for the selected date.");
+    alert("No style amount report found for the selected date range.");
     return;
   }
   const csv = [
-    ["dateFilter", "styleNumber", "color", "producedQty", "cmtRate", "serviceChargePct", "serviceChargeAmount", "totalAmount"].join(","),
-    ...rows.map((row) => [csvValue(row.dateLabel), csvValue(row.styleNumber), csvValue(row.color || ""), row.producedQty, row.cmtRate, row.serviceChargePct, row.serviceChargeAmount, row.billing].join(","))
+    ["reportDates", "styleNumber", "color", "orderQty", "cutQty", "makeQty", "dispatchQty", "cutVsMake", "makeVsDispatch", "cmtRate", "amount", "serviceChargeAmount", "totalBillAmount", "status"].join(","),
+    ...rows.map((row) => [
+      csvValue(row.dateLabel),
+      csvValue(row.styleNumber),
+      csvValue(row.color || ""),
+      row.orderQty,
+      row.cutQty,
+      row.producedQty,
+      row.dispatchQty,
+      csvValue(row.cutVsMakeSummary),
+      csvValue(row.makeVsDispatchSummary),
+      row.cmtRate,
+      row.baseAmount,
+      row.serviceChargeAmount,
+      row.billing,
+      csvValue(row.paymentStatusLabel)
+    ].join(","))
   ].join("\n");
-  downloadTextFile(`style-amount-report-${reportDate || "all-dates"}.csv`, csv, "text/csv");
+  downloadTextFile(`style-amount-report-${formatReportRangeForFilename(reportDate)}.csv`, csv, "text/csv");
+}
+
+async function downloadBillingPdf() {
+  const reportRange = getReportDateFilter();
+  const rows = styleBillingRows(reportRange);
+  if (!rows.length) {
+    alert("No billing report found for the selected date range.");
+    return;
+  }
+  const jsPdfCtor = window.jspdf?.jsPDF;
+  if (!jsPdfCtor) {
+    alert("PDF export library could not load. Please refresh and try again.");
+    return;
+  }
+
+  const pdf = new jsPdfCtor({
+    orientation: "landscape",
+    unit: "mm",
+    format: "a4"
+  });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const left = 8;
+  const top = 10;
+  const columns = [
+    { key: "styleNumber", label: "Style", width: 24 },
+    { key: "image", label: "Style Image", width: 20 },
+    { key: "orderQty", label: "Order Qty", width: 14 },
+    { key: "cutQty", label: "Cut Qty", width: 14 },
+    { key: "producedQty", label: "Make Qty", width: 16 },
+    { key: "dispatchQty", label: "Dispatch Qty", width: 17 },
+    { key: "cutVsMakeSummary", label: "Synopsis Cut vs Make", width: 29 },
+    { key: "makeVsDispatchSummary", label: "Synopsis Make vs Dispatch", width: 31 },
+    { key: "cmtRate", label: "CMT Rate", width: 14 },
+    { key: "baseAmount", label: "Amount", width: 18 },
+    { key: "serviceChargeAmount", label: "Service Charge Amount", width: 22 },
+    { key: "billing", label: "Total Bill Amount", width: 22 },
+    { key: "paymentStatusLabel", label: "Status", width: 15 }
+  ];
+
+  let y = top;
+  const drawHeader = () => {
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(16);
+    pdf.text("ENVOGUE CLOTHING", pageWidth / 2, y, { align: "center" });
+    pdf.setFontSize(11);
+    pdf.text("Billing Report", pageWidth / 2, y + 6, { align: "center" });
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(9);
+    pdf.text(`Date of Reports: ${getReportRangeLabel(reportRange)}`, left, y + 12);
+    y += 18;
+
+    let currentX = left;
+    pdf.setFillColor(143, 59, 32);
+    pdf.setTextColor(255, 255, 255);
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(7);
+    columns.forEach((column) => {
+      pdf.rect(currentX, y, column.width, 10, "F");
+      pdf.text(pdf.splitTextToSize(column.label, column.width - 2), currentX + 1, y + 4);
+      currentX += column.width;
+    });
+    pdf.setTextColor(0, 0, 0);
+    y += 10;
+  };
+
+  drawHeader();
+
+  for (const row of rows) {
+    const rowHeight = 16;
+    if (y + rowHeight > pageHeight - 18) {
+      pdf.addPage("a4", "landscape");
+      y = top;
+      drawHeader();
+    }
+    let currentX = left;
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(7);
+    for (const column of columns) {
+      pdf.rect(currentX, y, column.width, rowHeight);
+      if (column.key === "image") {
+        const imageData = await imageSourceToBase64(row.image);
+        if (imageData) {
+          const imageType = imageData.startsWith("data:image/png") ? "PNG" : "JPEG";
+          const fit = await calculateImageFit(column.width - 2, rowHeight - 2, imageData);
+          pdf.addImage(imageData, imageType, currentX + 1 + fit.xOffset, y + 1 + fit.yOffset, fit.width, fit.height);
+        } else {
+          pdf.text("-", currentX + (column.width / 2), y + 9, { align: "center" });
+        }
+      } else {
+        const value = formatBillingPdfCell(column.key, row);
+        pdf.text(pdf.splitTextToSize(value, column.width - 2), currentX + 1, y + 4);
+      }
+      currentX += column.width;
+    }
+    y += rowHeight;
+  }
+
+  const totals = rows.reduce((sum, row) => {
+    sum.baseAmount += row.baseAmount;
+    sum.serviceChargeAmount += row.serviceChargeAmount;
+    sum.billing += row.billing;
+    return sum;
+  }, { baseAmount: 0, serviceChargeAmount: 0, billing: 0 });
+  if (y + 16 > pageHeight - 10) {
+    pdf.addPage("a4", "landscape");
+    y = top;
+    drawHeader();
+  }
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(9);
+  pdf.text(`Total Amount: Rs ${fmt(totals.baseAmount)}`, left, y + 8);
+  pdf.text(`Total Service Charge: Rs ${fmt(totals.serviceChargeAmount)}`, left + 82, y + 8);
+  pdf.text(`Total Bill Amount: Rs ${fmt(totals.billing)}`, left + 180, y + 8);
+
+  pdf.save(`billing-report-${formatReportRangeForFilename(reportRange)}.pdf`);
 }
 
 async function downloadCuttingReport() {
   const reportDate = getReportDateFilter();
   const rows = cuttingReportRows(reportDate);
   if (!rows.length) {
-    alert("No cutting report found for the selected date.");
+    alert("No cutting report found for the selected date range.");
     return;
   }
   const workbook = createWorkbookOrAlert();
@@ -1499,7 +1962,7 @@ async function downloadCuttingReport() {
     await addWorksheetImage(sheet, row.image, excelRow.number, 2);
   }
   finalizeWorksheet(sheet);
-  await downloadWorkbook(`cutting-report-${reportDate || "all-dates"}.xlsx`, workbook);
+  await downloadWorkbook(`cutting-report-${formatReportRangeForFilename(reportDate)}.xlsx`, workbook);
 }
 
 async function downloadInternalChallan() {
@@ -1516,14 +1979,14 @@ async function downloadInternalChallan() {
     if (index > 0) pdf.addPage([148, 210], "portrait");
     await buildInternalChallanPdfPage(pdf, row, index + 1);
   }
-  pdf.save(`internal-challan-${reportDate || "all-dates"}.pdf`);
+  pdf.save(`internal-challan-${formatReportRangeForFilename(reportDate)}.pdf`);
 }
 
 async function downloadFlowReport() {
   const reportDate = getReportDateFilter();
   const rows = dispatchReportRows(reportDate);
   if (!rows.length) {
-    alert("No cut-make-dispatch report found for the selected date.");
+    alert("No cut-make-dispatch report found for the selected date range.");
     return;
   }
   const workbook = createWorkbookOrAlert();
@@ -1556,7 +2019,7 @@ async function downloadFlowReport() {
     await addWorksheetImage(sheet, row.image, excelRow.number, 1);
   }
   finalizeWorksheet(sheet);
-  await downloadWorkbook(`cut-make-dispatch-${reportDate || "all-dates"}.xlsx`, workbook);
+  await downloadWorkbook(`cut-make-dispatch-${formatReportRangeForFilename(reportDate)}.xlsx`, workbook);
 }
 
 function handleImagePreviewAction(e) {

@@ -262,19 +262,24 @@
       <section class="tab-panel" id="reports">
         <div class="panel-header"><div><p class="eyebrow">Reports</p><h2>Reconciliation and Billing</h2></div></div>
         <section class="card report-controls">
-          <div class="action-row">
-            <label>Report Date<input type="date" id="reportDate"></label>
-            <button type="button" id="clearReportDate" class="ghost">Clear Date</button>
-            <button type="button" id="downloadStyleAmountReport" class="ghost">Download Style Amount CSV</button>
-            <button type="button" id="downloadCuttingReport" class="ghost">Download Cutting Report XLSX</button>
-            <button type="button" id="downloadInternalChallan" class="ghost">Download Internal Challan PDF</button>
-            <button type="button" id="downloadFlowReport" class="ghost">Download Cut-Make-Dispatch XLSX</button>
+          <div class="report-filter-grid">
+            <label>From Date<input type="date" id="reportStartDate"></label>
+            <label>To Date<input type="date" id="reportEndDate"></label>
+            <div class="action-row report-filter-actions">
+              <button type="button" id="clearReportDate" class="ghost">Clear Dates</button>
+              <button type="button" id="downloadStyleAmountReport" class="ghost">Download Style Amount CSV</button>
+              <button type="button" id="downloadBillingPdf" class="ghost">Download Billing PDF</button>
+              <button type="button" id="downloadCuttingReport" class="ghost">Download Cutting Report XLSX</button>
+              <button type="button" id="downloadInternalChallan" class="ghost">Download Internal Challan PDF</button>
+              <button type="button" id="downloadFlowReport" class="ghost">Download Cut-Make-Dispatch XLSX</button>
+            </div>
           </div>
+          <p id="reportRangeSummary" class="field-hint">Showing all report dates.</p>
         </section>
         <div class="grid-two">
           <section class="card">
             <div class="section-title"><h3>Style-wise Amount Report</h3></div>
-            <div class="table-wrap"><table><thead><tr><th>Date Filter</th><th>Style</th><th>Color</th><th>Produced Qty</th><th>CMT Rate</th><th>Service %</th><th>Service Amt</th><th>Total Amount</th></tr></thead><tbody id="styleAmountReportTable"></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>Report Dates</th><th>Style</th><th>Color</th><th>Order Qty</th><th>Cut Qty</th><th>Make Qty</th><th>Dispatch Qty</th><th>Cut vs Make</th><th>Make vs Dispatch</th><th>CMT Rate</th><th>Amount</th><th>Service Amt</th><th>Total Bill</th><th>Status</th></tr></thead><tbody id="styleAmountReportTable"></tbody></table></div>
           </section>
           <section class="card">
             <div class="section-title"><h3>Reconciliation Report</h3></div>
@@ -295,6 +300,21 @@
           <section class="card">
             <div class="section-title"><h3>Operation Costing</h3></div>
             <div class="table-wrap"><table><thead><tr><th>Style</th><th>Operation</th><th>Qty</th><th>Rate</th><th>Amount</th></tr></thead><tbody id="operationCostTable"></tbody></table></div>
+          </section>
+          <section class="card">
+            <div class="section-title"><h3>Payment Made</h3></div>
+            <form id="paymentForm" class="form-grid">
+              <label>Payment Date<input type="date" name="paymentDate" required></label>
+              <label>Payment Ref / Notes<input type="text" name="notes" placeholder="UTR / cheque / remarks"></label>
+              <label>Amount Paid (Rs)<input type="number" name="baseAmountPaid" min="0" step="0.01" required></label>
+              <label>Service Charge Paid (Rs)<input type="number" name="serviceChargePaid" min="0" step="0.01" required></label>
+              <label>Total Paid (Rs)<input type="number" name="totalPaid" min="0" step="0.01" required></label>
+              <div class="full-span action-row">
+                <button type="submit">Save Payment For Current Date Range</button>
+              </div>
+            </form>
+            <p class="field-hint">Save payment after selecting From Date and To Date. The same styles will show as paid when you open that range again.</p>
+            <div class="table-wrap"><table><thead><tr><th>Payment Date</th><th>Report Dates</th><th>Styles</th><th>Amount Paid</th><th>Service Charge Paid</th><th>Total Paid</th><th>Notes</th><th>Action</th></tr></thead><tbody id="paymentHistoryTable"></tbody></table></div>
           </section>
         </div>
       </section>
