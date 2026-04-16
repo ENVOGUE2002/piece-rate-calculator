@@ -92,6 +92,10 @@
             <div class="table-wrap"><table><thead><tr><th>Worker</th><th>Operation</th><th>Qty</th><th>Amount</th></tr></thead><tbody id="workerBillingTable"></tbody></table></div>
           </section>
         </div>
+        <section class="card">
+          <div class="section-title"><h3>Pending Workflow</h3></div>
+          <div class="table-wrap"><table><thead><tr><th>Style</th><th>Color</th><th>Status</th><th>Order Qty</th><th>Cut Qty</th><th>Make Qty</th><th>Dispatch Qty</th></tr></thead><tbody id="pendingWorkflowTable"></tbody></table></div>
+        </section>
       </section>
 
       <section class="tab-panel" id="styles">
@@ -109,12 +113,14 @@
               <label>Style Number<input type="text" name="styleNumber" required placeholder="ST-101"></label>
               <label>Buyer Name<input type="text" name="buyerName"></label>
               <label>Style Name<input type="text" name="styleName"></label>
-              <label>Color<input type="text" name="color"></label>
-              <label>Order Qty<input type="number" name="orderQty" min="0" step="1" placeholder="0"></label>
               <label>Total CMT Rate (Rs)<input type="number" name="cmtRate" min="0" step="0.01" required></label>
               <label>Service Charge (%)<input type="number" name="serviceChargePct" min="0" step="0.01" placeholder="0"></label>
               <label>Image URL<input type="text" name="image"></label>
               <label>Upload Style Image<input type="file" name="imageFile" id="styleImageFile" accept="image/*"></label>
+              <div class="full-span">
+                <div class="section-title compact"><h3>Colours and Order Qty</h3><button type="button" id="addStyleVariantBtn" class="ghost small">Add Colour</button></div>
+                <div id="styleVariantRows" class="stack gap-sm"></div>
+              </div>
               <div class="stack gap-sm">
                 <button type="button" id="pasteStyleImageBtn" class="ghost">Paste Image From Clipboard</button>
                 <p id="styleImagePasteStatus" class="field-hint">You can also click here after copying a screenshot and press `Ctrl + V`.</p>
@@ -162,7 +168,11 @@
           </section>
           <section class="card">
             <div class="section-title"><h3>Cutting Entries</h3></div>
-            <div class="table-wrap"><table><thead><tr><th>Date</th><th>Style</th><th>Service</th><th>Order Qty</th><th>Total Qty</th><th>Size-wise</th><th>Remarks</th><th>Action</th></tr></thead><tbody id="cuttingEntriesTable"></tbody></table></div>
+            <label class="list-search">
+              Search Cutting Entries
+              <input type="text" id="cuttingEntriesSearch" placeholder="Search style, color, date, service">
+            </label>
+            <div class="table-wrap"><table><thead id="cuttingEntriesHead"></thead><tbody id="cuttingEntriesTable"></tbody></table></div>
           </section>
         </div>
       </section>
@@ -188,6 +198,10 @@
           </section>
           <section class="card">
             <div class="section-title"><h3>Style Production Entries</h3></div>
+            <label class="list-search">
+              Search Style Production
+              <input type="text" id="styleProductionEntriesSearch" placeholder="Search style, color, date">
+            </label>
             <div class="table-wrap"><table><thead><tr><th>Date</th><th>Style</th><th>Total Qty</th><th>Size-wise</th><th>Remarks</th><th>Action</th></tr></thead><tbody id="styleProductionEntriesTable"></tbody></table></div>
           </section>
         </div>
@@ -254,6 +268,10 @@
           </section>
           <section class="card">
             <div class="section-title"><h3>Dispatch Entries</h3></div>
+            <label class="list-search">
+              Search Dispatch Entries
+              <input type="text" id="dispatchEntriesSearch" placeholder="Search style, color, date">
+            </label>
             <div class="table-wrap"><table><thead><tr><th>Date</th><th>Style</th><th>Total Qty</th><th>Size-wise</th><th>Remarks</th><th>Action</th></tr></thead><tbody id="dispatchEntriesTable"></tbody></table></div>
           </section>
         </div>
@@ -278,21 +296,37 @@
         </section>
         <div class="grid-two">
           <section class="card">
-            <div class="section-title"><h3>Style-wise Amount Report</h3></div>
-            <div class="table-wrap"><table><thead><tr><th>Report Dates</th><th>Style</th><th>Color</th><th>Order Qty</th><th>Cut Qty</th><th>Make Qty</th><th>Dispatch Qty</th><th>Cut vs Make</th><th>Make vs Dispatch</th><th>CMT Rate</th><th>Amount</th><th>Service Amt</th><th>Total Bill</th><th>Status</th></tr></thead><tbody id="styleAmountReportTable"></tbody></table></div>
+            <div class="section-title"><h3>Billing Report</h3></div>
+            <label class="list-search">
+              Search Billing Report
+              <input type="text" id="billingReportSearch" placeholder="Search style, color, status">
+            </label>
+            <div class="table-wrap"><table><thead><tr><th>Report Dates</th><th>Style Number</th><th>Color</th><th>Order Qty</th><th>Cut Qty</th><th>Make Qty</th><th>Dispatch Qty</th><th>Cut vs Make Summary</th><th>Make vs Dispatch Summary</th><th>CMT Rate</th><th>Base Amount</th><th>Service Charge Amount</th><th>Total Bill Amount</th><th>Payment Status</th></tr></thead><tbody id="styleAmountReportTable"></tbody></table></div>
           </section>
           <section class="card">
             <div class="section-title"><h3>Reconciliation Report</h3></div>
+            <label class="list-search">
+              Search Reconciliation Report
+              <input type="text" id="reconciliationSearch" placeholder="Search style, color">
+            </label>
             <div class="table-wrap"><table><thead><tr><th>Style</th><th>Cut Qty</th><th>Produced Qty</th><th>Accepted Qty</th><th>Rejected Qty</th><th>Balance</th></tr></thead><tbody id="reconciliationTable"></tbody></table></div>
           </section>
         </div>
         <div class="grid-two">
           <section class="card">
             <div class="section-title"><h3>Cutting Report</h3></div>
+            <label class="list-search">
+              Search Cutting Report
+              <input type="text" id="cuttingReportSearch" placeholder="Search style, color, date, service">
+            </label>
             <div class="table-wrap"><table><thead id="cuttingReportHead"></thead><tbody id="cuttingReportTable"></tbody></table></div>
           </section>
           <section class="card">
             <div class="section-title"><h3>Size-wise Dispatch Details</h3></div>
+            <label class="list-search">
+              Search Dispatch Details
+              <input type="text" id="dispatchReportSearch" placeholder="Search style, color, size">
+            </label>
             <div class="table-wrap"><table><thead><tr><th>Photo</th><th>Style</th><th>Color</th><th>Size</th><th>Cut</th><th>Make</th><th>Dispatch</th><th>Amount</th><th>Balance</th></tr></thead><tbody id="dispatchReportTable"></tbody></table></div>
           </section>
         </div>
@@ -317,6 +351,43 @@
             <div class="table-wrap"><table><thead><tr><th>Payment Date</th><th>Report Dates</th><th>Styles</th><th>Amount Paid</th><th>Service Charge Paid</th><th>Total Paid</th><th>Notes</th><th>Action</th></tr></thead><tbody id="paymentHistoryTable"></tbody></table></div>
           </section>
         </div>
+        <section class="card tally-card">
+          <div class="section-title">
+            <div>
+              <h3>Tally Creditors Ageing</h3>
+              <p class="field-hint">Sync supplier vouchers from Tally XML, auto-adjust on-account payments against the oldest invoices, and export payment-planning reports.</p>
+            </div>
+          </div>
+          <form id="tallySyncForm" class="form-grid">
+            <label>Tally URL<input type="url" name="endpoint" id="tallyEndpoint" placeholder="http://127.0.0.1:9000"></label>
+            <label>Company Name<input type="text" name="company" id="tallyCompany" placeholder="Optional Tally company name"></label>
+            <label>From Date<input type="date" name="fromDate" id="tallyFromDate"></label>
+            <label>As On Date<input type="date" name="asOnDate" id="tallyAsOnDate"></label>
+            <label>Age Buckets (days)<input type="text" name="bucketDays" id="tallyBucketDays" placeholder="30,60,90,120"></label>
+            <label>Party Search<input type="text" name="partySearch" id="tallyPartySearch" placeholder="Search supplier name"></label>
+            <div class="full-span action-row">
+              <button type="submit">Sync From Tally</button>
+              <button type="button" class="ghost" id="testTallyConnectionBtn">Test Tally Connection</button>
+              <button type="button" class="ghost" id="importTallyXmlBtn">Import Tally XML</button>
+              <button type="button" class="ghost" id="exportTallyAgeingBtn">Export Creditors XLSX</button>
+              <button type="button" class="ghost" id="exportTallyAgeingCsvBtn">Export Creditors CSV</button>
+              <input type="file" id="tallyXmlInput" accept=".xml,text/xml,application/xml" hidden>
+            </div>
+          </form>
+          <p id="tallySyncStatus" class="field-hint">Connect Tally and load supplier vouchers to build the ageing report.</p>
+          <div id="tallySummaryCards" class="stats-grid"></div>
+        </section>
+        <div class="grid-two tally-grid">
+          <section class="card">
+            <div class="section-title"><h3>Supplier Summary</h3></div>
+            <div class="table-wrap tally-table-wrap"><table><thead><tr><th>Party</th><th>Outstanding</th><th id="tallyCurrentBucketHead">0-30 Days</th><th id="tallyBucketHead">31-60 / 61-90 / 91+</th><th>Last Payment</th><th>Invoices</th><th>Open Items</th></tr></thead><tbody id="tallyCreditorsTable"></tbody></table></div>
+          </section>
+          <section class="card">
+            <div class="section-title"><h3>Invoice Details</h3></div>
+            <p id="tallySelectedPartyLabel" class="field-hint">Select a supplier from the summary to view invoice-level details.</p>
+            <div class="table-wrap tally-table-wrap"><table><thead><tr><th>Invoice Date</th><th>Voucher No.</th><th>Reference</th><th>Original Amount</th><th>Adjusted</th><th>Balance</th><th>Age Days</th><th>Bucket</th><th>Last Payment</th></tr></thead><tbody id="tallyInvoiceDetailsTable"></tbody></table></div>
+          </section>
+        </div>
       </section>
     </main>
   </div>
@@ -339,6 +410,13 @@
       <button type="button" class="ghost remove-operation">Remove</button>
     </div>
   </template>
-  <script src="app.js"></script>
+  <template id="styleVariantTemplate">
+    <div class="style-variant-row">
+      <input type="text" name="styleVariantColor" placeholder="Colour">
+      <input type="number" name="styleVariantOrderQty" min="0" step="1" placeholder="Order Qty">
+      <button type="button" class="ghost remove-style-variant">Remove</button>
+    </div>
+  </template>
+  <script src="app.js?v=2026-04-16-3"></script>
 </body>
 </html>
