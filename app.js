@@ -1,6 +1,9 @@
 
 const STORAGE_KEY = "piece-rate-calculator-v1";
 const DEFAULT_SIZE_LIST = ["XS", "S", "M", "L", "XL", "XXL"];
+const DEFAULT_WASHCARE_TEMPLATE_PATH = "C:\\Users\\Lenovo\\Downloads\\SHEIN WASHCARE.btw";
+const DEFAULT_WASHCARE_LABEL_WIDTH_MM = 35.5;
+const DEFAULT_WASHCARE_LABEL_LENGTH_MM = 100;
 const SECTION_ACCESS_TABS = ["styles", "cutting", "production", "acceptance", "dispatch"];
 const SECTION_ACCESS_LABELS = {
   styles: "Style Master",
@@ -16,6 +19,7 @@ const DEFAULTS = {
   productionEntries: [],
   acceptanceEntries: [],
   dispatchEntries: [],
+  washcareRecords: [],
   payments: [],
   tallyCreditors: {
     endpoint: "",
@@ -103,6 +107,16 @@ const els = {
   dispatchSizeRows: $("dispatchSizeRows"),
   dispatchEntriesTable: $("dispatchEntriesTable"),
   dispatchEntriesSearch: $("dispatchEntriesSearch"),
+  washcareForm: $("washcareForm"),
+  washcareStyleSearch: $("washcareStyleSearch"),
+  washcareStyleSelect: $("washcareStyleSelect"),
+  washcareSearch: $("washcareSearch"),
+  washcareTable: $("washcareTable"),
+  washcarePreview: $("washcarePreview"),
+  washcareSeedStatus: $("washcareSeedStatus"),
+  washcareReportInput: $("washcareReportInput"),
+  printWashcareBtn: $("printWashcareBtn"),
+  copyWashcareCommandBtn: $("copyWashcareCommandBtn"),
   dashboardStats: $("dashboardStats"),
   pendingWorkflowTable: $("pendingWorkflowTable"),
   styleBillingTable: $("styleBillingTable"),
@@ -173,11 +187,15 @@ init().catch((error) => {
 async function init() {
   state = await loadInitialState();
   normalizeState();
+  configurePdfJs();
   bindTabs();
   seedOperationRows();
   seedStyleVariantRows();
   buildSizeInputs();
   setToday();
+  if (els.washcareForm?.templatePath && !clean(els.washcareForm.templatePath.value)) {
+    els.washcareForm.templatePath.value = DEFAULT_WASHCARE_TEMPLATE_PATH;
+  }
   buildSizeSelect();
   els.sizeListInput.value = getSizes().join(", ");
   populateAccessCodeInputs();
@@ -284,6 +302,7 @@ function bindForms() {
   els.productionEntriesTable.addEventListener("click", handleProductionTableAction);
   els.acceptanceEntriesTable.addEventListener("click", handleAcceptanceTableAction);
   els.dispatchEntriesTable.addEventListener("click", handleDispatchTableAction);
+  els.washcareTable?.addEventListener("click", handleWashcareTableAction);
   els.sizeSettingsForm.addEventListener("submit", saveSizes);
   els.accessCodeForm?.addEventListener("submit", saveAccessCodes);
   els.accessCodeForm?.addEventListener("click", handleAccessLinkCopy);
@@ -307,6 +326,14 @@ function bindForms() {
   els.productionForm.addEventListener("submit", saveProduction);
   els.acceptanceForm.addEventListener("submit", saveAcceptance);
   els.dispatchForm.addEventListener("submit", saveDispatch);
+  els.washcareForm?.addEventListener("submit", saveWashcare);
+  els.washcareForm?.addEventListener("input", renderWashcarePreview);
+  els.washcareForm?.addEventListener("reset", () => {
+    window.setTimeout(() => {
+      delete els.washcareForm.dataset.editId;
+      renderWashcarePreview();
+    }, 0);
+  });
   els.paymentForm?.addEventListener("submit", savePayment);
   els.paymentForm?.addEventListener("input", syncPaymentFormTotal);
   els.productionStyleSelect.addEventListener("change", renderOperationSelect);
@@ -321,6 +348,7 @@ function bindForms() {
   els.cuttingEntriesSearch?.addEventListener("input", renderCutting);
   els.styleProductionEntriesSearch?.addEventListener("input", renderStyleProduction);
   els.dispatchEntriesSearch?.addEventListener("input", renderDispatch);
+  els.washcareSearch?.addEventListener("input", renderWashcare);
   els.billingReportSearch?.addEventListener("input", renderReports);
   els.reconciliationSearch?.addEventListener("input", renderReports);
   els.cuttingReportSearch?.addEventListener("input", renderReports);
@@ -346,6 +374,10 @@ function bindForms() {
   els.styleProductionImportInput?.addEventListener("change", importStyleProductionCsv);
   els.productionImportInput.addEventListener("change", importProductionCsv);
   els.pasteStyleImageBtn?.addEventListener("click", pasteStyleImageFromClipboard);
+  els.washcareStyleSelect?.addEventListener("change", handleWashcareStyleChange);
+  els.washcareReportInput?.addEventListener("change", seedWashcareFromReportFile);
+  els.printWashcareBtn?.addEventListener("click", handleWashcarePrint);
+  els.copyWashcareCommandBtn?.addEventListener("click", copyWashcareCommand);
   bindStyleSearches();
   els.paymentHistoryTable?.addEventListener("click", handlePaymentTableAction);
   els.closeImagePreview?.addEventListener("click", closeImagePreview);
@@ -363,7 +395,8 @@ function bindStyleSearches() {
     [els.styleProductionStyleSearch, els.styleProductionStyleSelect],
     [els.productionStyleSearch, els.productionStyleSelect],
     [els.acceptanceStyleSearch, els.acceptanceStyleSelect],
-    [els.dispatchStyleSearch, els.dispatchStyleSelect]
+    [els.dispatchStyleSearch, els.dispatchStyleSelect],
+    [els.washcareStyleSearch, els.washcareStyleSelect]
   ].forEach(([input, select]) => {
     input?.addEventListener("input", () => {
       if (select) renderStyleSelect(select, input.value);
@@ -556,6 +589,61 @@ async function saveDispatch(e) {
   await persistState();
 }
 
+async function saveWashcare(e) {
+  e.preventDefault();
+  const f = new FormData(els.washcareForm);
+  const styleId = clean(f.get("styleId"));
+  if (!styleId) {
+    alert("Please select a style for washcare.");
+    return;
+  }
+  const editId = els.washcareForm.dataset.editId || "";
+  const existing = state.washcareRecords.find((record) => record.styleId === styleId && record.id !== editId);
+  const templatePath = clean(f.get("templatePath"));
+  const manualPrintCommand = clean(f.get("printCommand"));
+  const payload = {
+    id: editId || uid(),
+    styleId,
+    reportNumber: clean(f.get("reportNumber")),
+    reportDate: normalizeDateValue(f.get("reportDate")),
+    labName: clean(f.get("labName")),
+    templateName: clean(f.get("templateName")),
+    templatePath,
+    printMethod: clean(f.get("printMethod")) || "browser",
+    printCommand: manualPrintCommand || generateWashcarePrintCommand({ templatePath }),
+    labelWidthMm: clampWashcareDimension(f.get("labelWidthMm"), DEFAULT_WASHCARE_LABEL_WIDTH_MM),
+    labelLengthMm: clampWashcareDimension(f.get("labelLengthMm"), DEFAULT_WASHCARE_LABEL_LENGTH_MM),
+    reportSourceName: clean(f.get("reportSourceName")),
+    reportStyleCode: clean(f.get("reportStyleCode")),
+    reportColor: clean(f.get("reportColor")),
+    reportBrand: clean(f.get("reportBrand")),
+    reportSupplier: clean(f.get("reportSupplier")),
+    composition: clean(f.get("composition")),
+    compositionFontSize: clampWashcareSize(f.get("compositionFontSize"), 22),
+    careSymbols: parseWashcareSymbols(f.get("careSymbols")),
+    symbolSize: clampWashcareSize(f.get("symbolSize"), 30),
+    symbolGap: clampWashcareSize(f.get("symbolGap"), 6),
+    washcareText: clean(f.get("washcareText")),
+    washcareFontSize: clampWashcareSize(f.get("washcareFontSize"), 16),
+    originLine: clean(f.get("originLine")) || "MADE IN INDIA",
+    footerLine1: clean(f.get("footerLine1")),
+    footerLine2: clean(f.get("footerLine2")),
+    notes: clean(f.get("notes")),
+    updatedAt: new Date().toISOString()
+  };
+
+  if (existing) {
+    const confirmed = window.confirm("Washcare already exists for this style. Do you want to replace it?");
+    if (!confirmed) return;
+    payload.id = existing.id;
+  }
+
+  upsertEntry("washcareRecords", payload, payload.id);
+  delete els.washcareForm.dataset.editId;
+  await persistState();
+  populateWashcareFormByStyle(styleId);
+}
+
 async function savePayment(e) {
   e.preventDefault();
   const reportRange = getReportDateFilter();
@@ -607,6 +695,7 @@ function render() {
   renderProduction();
   renderAcceptance();
   renderDispatch();
+  renderWashcare();
   renderDashboard();
   renderReports();
   renderTallyForm();
@@ -618,6 +707,7 @@ function renderStyleSelects() {
   renderStyleSelect(els.productionStyleSelect, els.productionStyleSearch?.value || "");
   renderStyleSelect(els.acceptanceStyleSelect, els.acceptanceStyleSearch?.value || "");
   renderStyleSelect(els.dispatchStyleSelect, els.dispatchStyleSearch?.value || "");
+  renderStyleSelect(els.washcareStyleSelect, els.washcareStyleSearch?.value || "");
 }
 
 function renderStyleSelect(select, searchTerm = "") {
@@ -724,6 +814,52 @@ function renderDispatch() {
   }).map((entry) => `
     <tr><td>${esc(entry.date)}</td><td>${esc(styleLabel(byId(entry.styleId)))}</td><td>${fmtInt(sumObj(entry.quantities))}</td><td>${esc(formatQuantities(entry.quantities))}</td><td>${esc(entry.remarks || "-")}</td><td><button type="button" class="ghost small" data-action="edit-dispatch" data-entry-id="${entry.id}">Edit</button> <button type="button" class="ghost small" data-action="delete-dispatch" data-entry-id="${entry.id}">Delete</button></td></tr>`);
   els.dispatchEntriesTable.innerHTML = rowsOrEmpty(rows, 6, "No dispatch entries recorded.");
+}
+
+function renderWashcare() {
+  renderWashcarePreview();
+  if (!els.washcareTable) return;
+  const search = clean(els.washcareSearch?.value).toLowerCase();
+  const rows = state.washcareRecords
+    .slice()
+    .sort((a, b) => clean(b.updatedAt).localeCompare(clean(a.updatedAt)))
+    .filter((record) => {
+      const style = byId(record.styleId);
+      return matchesTextSearch([
+        style?.styleNumber,
+        style?.color,
+        style?.styleName,
+        record.reportNumber,
+        record.composition,
+        record.templateName
+      ], search);
+    })
+    .map((record) => {
+      const style = byId(record.styleId);
+      return `
+        <tr>
+          <td>${esc(styleLabel(style))}</td>
+          <td>${esc(record.reportNumber || "-")}</td>
+          <td>${esc(record.reportDate || "-")}</td>
+          <td>${esc(record.templateName || record.templatePath || "-")}</td>
+          <td>${esc(formatWashcarePrintMethod(record.printMethod))}</td>
+          <td>${esc(formatDateTimeDisplay(record.updatedAt) || "-")}</td>
+          <td><button type="button" class="ghost small" data-action="edit-washcare" data-entry-id="${record.id}">Edit</button> <button type="button" class="ghost small" data-action="print-washcare" data-entry-id="${record.id}">Print</button> <button type="button" class="ghost small" data-action="delete-washcare" data-entry-id="${record.id}">Delete</button></td>
+        </tr>`;
+    });
+  els.washcareTable.innerHTML = rowsOrEmpty(rows, 7, "No washcare saved yet.");
+}
+
+function renderWashcarePreview() {
+  if (!els.washcarePreview) return;
+  const preview = getWashcarePreviewData();
+  if (!preview.style) {
+    els.washcarePreview.classList.add("empty-state");
+    els.washcarePreview.innerHTML = "Select a style and enter washcare details to preview the label.";
+    return;
+  }
+  els.washcarePreview.classList.remove("empty-state");
+  els.washcarePreview.innerHTML = buildWashcarePreviewMarkup(preview);
 }
 
 function renderDashboard() {
@@ -1527,6 +1663,254 @@ function buildStylePayload(payload) {
   };
 }
 
+function parseWashcareSymbols(value) {
+  const raw = String(value || "");
+  const parts = raw
+    .split(/\r?\n|,|;|\||\u2022/g)
+    .map((item) => clean(item))
+    .filter(Boolean);
+  return uniqueValues([...parts, ...extractCareSymbolPhrases(raw)]);
+}
+
+function formatWashcarePrintMethod(value) {
+  if (value === "command") return "Copy Command";
+  if (value === "both") return "Preview + Command";
+  return "Browser Preview";
+}
+
+function configurePdfJs() {
+  if (!window.pdfjsLib) return;
+  if (window.pdfjsLib.GlobalWorkerOptions) {
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = "";
+  }
+}
+
+function getWashcareRecordByStyle(styleId) {
+  return state.washcareRecords.find((record) => record.styleId === styleId) || null;
+}
+
+function populateWashcareForm(record) {
+  if (!els.washcareForm) return;
+  els.washcareForm.dataset.editId = record?.id || "";
+  els.washcareForm.styleId.value = record?.styleId || "";
+  els.washcareForm.reportNumber.value = record?.reportNumber || "";
+  els.washcareForm.reportDate.value = record?.reportDate || "";
+  els.washcareForm.labName.value = record?.labName || "";
+  els.washcareForm.templateName.value = record?.templateName || "";
+  els.washcareForm.templatePath.value = record?.templatePath || DEFAULT_WASHCARE_TEMPLATE_PATH;
+  els.washcareForm.printMethod.value = record?.printMethod || "browser";
+  els.washcareForm.printCommand.value = record?.printCommand || "";
+  els.washcareForm.labelWidthMm.value = record?.labelWidthMm || DEFAULT_WASHCARE_LABEL_WIDTH_MM;
+  els.washcareForm.labelLengthMm.value = record?.labelLengthMm || DEFAULT_WASHCARE_LABEL_LENGTH_MM;
+  els.washcareForm.reportSourceName.value = record?.reportSourceName || "";
+  els.washcareForm.reportStyleCode.value = record?.reportStyleCode || "";
+  els.washcareForm.reportColor.value = record?.reportColor || "";
+  els.washcareForm.reportBrand.value = record?.reportBrand || "";
+  els.washcareForm.reportSupplier.value = record?.reportSupplier || "";
+  els.washcareForm.composition.value = record?.composition || "";
+  els.washcareForm.compositionFontSize.value = record?.compositionFontSize || 22;
+  els.washcareForm.careSymbols.value = (record?.careSymbols || []).join(", ");
+  els.washcareForm.symbolSize.value = record?.symbolSize || 30;
+  els.washcareForm.symbolGap.value = record?.symbolGap || 6;
+  els.washcareForm.washcareText.value = record?.washcareText || "";
+  els.washcareForm.washcareFontSize.value = record?.washcareFontSize || 16;
+  els.washcareForm.originLine.value = record?.originLine || "MADE IN INDIA";
+  els.washcareForm.footerLine1.value = record?.footerLine1 || "";
+  els.washcareForm.footerLine2.value = record?.footerLine2 || "";
+  els.washcareForm.notes.value = record?.notes || "";
+  renderWashcarePreview();
+}
+
+function populateWashcareFormByStyle(styleId) {
+  if (!els.washcareForm) return;
+  const record = getWashcareRecordByStyle(styleId);
+  if (record) {
+    populateWashcareForm(record);
+    return;
+  }
+  const currentStyleId = clean(styleId);
+  els.washcareForm.reset();
+  delete els.washcareForm.dataset.editId;
+  els.washcareForm.styleId.value = currentStyleId;
+  if (els.washcareForm.printMethod) els.washcareForm.printMethod.value = "browser";
+  if (els.washcareForm.templatePath) els.washcareForm.templatePath.value = DEFAULT_WASHCARE_TEMPLATE_PATH;
+  if (els.washcareForm.labelWidthMm) els.washcareForm.labelWidthMm.value = DEFAULT_WASHCARE_LABEL_WIDTH_MM;
+  if (els.washcareForm.labelLengthMm) els.washcareForm.labelLengthMm.value = DEFAULT_WASHCARE_LABEL_LENGTH_MM;
+  if (els.washcareForm.compositionFontSize) els.washcareForm.compositionFontSize.value = 22;
+  if (els.washcareForm.symbolSize) els.washcareForm.symbolSize.value = 30;
+  if (els.washcareForm.symbolGap) els.washcareForm.symbolGap.value = 6;
+  if (els.washcareForm.washcareFontSize) els.washcareForm.washcareFontSize.value = 16;
+  if (els.washcareForm.originLine) els.washcareForm.originLine.value = "MADE IN INDIA";
+  renderWashcarePreview();
+}
+
+function getWashcarePreviewData(record = null) {
+  const source = record || (els.washcareForm ? new FormData(els.washcareForm) : null);
+  const styleId = record ? record.styleId : clean(source?.get("styleId"));
+  const style = byId(styleId);
+  if (!style) return { style: null };
+  const templatePath = record ? clean(record.templatePath) : clean(source.get("templatePath"));
+  const manualPrintCommand = record ? clean(record.printCommand) : clean(source.get("printCommand"));
+  return {
+    style,
+    reportNumber: record ? clean(record.reportNumber) : clean(source.get("reportNumber")),
+    reportDate: record ? clean(record.reportDate) : normalizeDateValue(source.get("reportDate")),
+    labName: record ? clean(record.labName) : clean(source.get("labName")),
+    templateName: record ? clean(record.templateName) : clean(source.get("templateName")),
+    templatePath,
+    printMethod: record ? clean(record.printMethod) : clean(source.get("printMethod")) || "browser",
+    printCommand: manualPrintCommand || generateWashcarePrintCommand({ templatePath }),
+    labelWidthMm: record ? num(record.labelWidthMm) : clampWashcareDimension(source.get("labelWidthMm"), DEFAULT_WASHCARE_LABEL_WIDTH_MM),
+    labelLengthMm: record ? num(record.labelLengthMm) : clampWashcareDimension(source.get("labelLengthMm"), DEFAULT_WASHCARE_LABEL_LENGTH_MM),
+    reportSourceName: record ? clean(record.reportSourceName) : clean(source.get("reportSourceName")),
+    reportStyleCode: record ? clean(record.reportStyleCode) : clean(source.get("reportStyleCode")),
+    reportColor: record ? clean(record.reportColor) : clean(source.get("reportColor")),
+    reportBrand: record ? clean(record.reportBrand) : clean(source.get("reportBrand")),
+    reportSupplier: record ? clean(record.reportSupplier) : clean(source.get("reportSupplier")),
+    composition: record ? clean(record.composition) : clean(source.get("composition")),
+    compositionFontSize: record ? num(record.compositionFontSize) : clampWashcareSize(source.get("compositionFontSize"), 22),
+    careSymbols: record ? parseWashcareSymbols((record.careSymbols || []).join(",")) : parseWashcareSymbols(source.get("careSymbols")),
+    symbolSize: record ? num(record.symbolSize) : clampWashcareSize(source.get("symbolSize"), 30),
+    symbolGap: record ? num(record.symbolGap) : clampWashcareSize(source.get("symbolGap"), 6),
+    washcareText: record ? clean(record.washcareText) : clean(source.get("washcareText")),
+    washcareFontSize: record ? num(record.washcareFontSize) : clampWashcareSize(source.get("washcareFontSize"), 16),
+    originLine: record ? clean(record.originLine) : clean(source.get("originLine")) || "MADE IN INDIA",
+    footerLine1: record ? clean(record.footerLine1) : clean(source.get("footerLine1")),
+    footerLine2: record ? clean(record.footerLine2) : clean(source.get("footerLine2")),
+    notes: record ? clean(record.notes) : clean(source.get("notes"))
+  };
+}
+
+function buildWashcarePreviewMarkup(preview) {
+  const careSymbolEntries = resolveWashcareSymbolEntries(preview.careSymbols, preview.washcareText);
+  const washcareLines = formatWashcareLines(preview.washcareText);
+  return `
+    <div class="washcare-label" style="--washcare-composition-size:${num(preview.compositionFontSize) || 22}px; --washcare-symbol-size:${num(preview.symbolSize) || 30}px; --washcare-symbol-gap:${num(preview.symbolGap) || 6}px; --washcare-text-size:${num(preview.washcareFontSize) || 16}px; --washcare-label-width:${num(preview.labelWidthMm) || DEFAULT_WASHCARE_LABEL_WIDTH_MM}mm; --washcare-label-length:${num(preview.labelLengthMm) || DEFAULT_WASHCARE_LABEL_LENGTH_MM}mm;">
+      <div class="washcare-label-composition">${esc((preview.composition || "-").toUpperCase())}</div>
+      <div class="washcare-label-icons">${careSymbolEntries.length ? careSymbolEntries.map((entry) => renderWashcareIcon(entry.symbol, entry.phrase)).join("") : ""}</div>
+      <div class="washcare-label-text">${washcareLines.length ? washcareLines.map((line) => `<div>${esc(line.toUpperCase())}</div>`).join("") : "<div>-</div>"}</div>
+      <div class="washcare-label-footer">
+        <div>${esc((preview.originLine || "MADE IN INDIA").toUpperCase())}</div>
+        ${preview.footerLine1 ? `<div>${esc(preview.footerLine1.toUpperCase())}</div>` : ""}
+        ${preview.footerLine2 ? `<div>${esc(preview.footerLine2.toUpperCase())}</div>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function formatWashcareLines(text) {
+  return String(text || "")
+    .split(/\r?\n|,/)
+    .map((line) => clean(line))
+    .filter(Boolean);
+}
+
+function deriveCareSymbolsFromText(text) {
+  return extractCareSymbolPhrases(text);
+}
+
+function clampWashcareSize(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function clampWashcareDimension(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function resolveWashcareSymbols(explicitSymbols = [], washcareText = "") {
+  return resolveWashcareSymbolEntries(explicitSymbols, washcareText).map((entry) => entry.symbol);
+}
+
+function resolveWashcareSymbolEntries(explicitSymbols = [], washcareText = "") {
+  const fromExplicit = explicitSymbols
+    .map((phrase) => clean(phrase))
+    .filter(Boolean)
+    .map((phrase) => ({ phrase, symbol: resolveApprovedWashcareSymbol(phrase) }));
+  const fromText = extractCareSymbolPhrases(washcareText)
+    .map((phrase) => ({ phrase, symbol: resolveApprovedWashcareSymbol(phrase) }));
+  return uniqueWashcareSymbolEntries([...fromExplicit, ...fromText]);
+}
+
+function resolveApprovedWashcareSymbol(phrase) {
+  const normalizedPhrase = normalizeWashcareText(phrase);
+  if (/(warm\s*40\s*[^a-z0-9]?\s*c|\b40\s*[^a-z0-9]?\s*c\b|\b40c\b)/i.test(normalizedPhrase)) return "wash-40";
+  if (/(machine\s*wash|hand\s*wash|wash\s*(dark\s*colou?rs?\s*)?separately|normal\s*cycle)/i.test(normalizedPhrase)) return "wash";
+  return mapPhraseToWashcareSymbol(phrase);
+}
+
+function uniqueWashcareSymbolEntries(entries) {
+  const seen = new Set();
+  return entries.filter((entry) => {
+    const key = entry.symbol || normalizeKey(entry.phrase);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function mapPhraseToWashcareSymbol(phrase) {
+  const normalizedPhrase = normalizeWashcareText(phrase);
+  const key = normalizeKey(normalizedPhrase);
+  if (!key) return "";
+  if (key.includes("donotironondecoration")) return "";
+  if (/(machine\s*wash|hand\s*wash|wash\s*(dark\s*colou?rs?\s*)?separately|warm\s*40\s*[°º]?\s*c|\b40\s*[°º]?\s*c\b|\b40c\b|normal\s*cycle)/i.test(normalizedPhrase)) return "wash-40";
+  if (/(do\s*not\s*bleach|no\s*bleach|\bbleach\b)/i.test(normalizedPhrase)) return "no-bleach";
+  if (/(line\s*dry(\s*in)?\s*shade|dry\s*in\s*shade)/i.test(normalizedPhrase)) return "line-dry-shade";
+  if (/tumble\s*dry/i.test(normalizedPhrase)) return "tumble-dry-low";
+  if (/(iron\s*at\s*low|iron\s*low|low\s*setting|iron\s*.*\blow\b)/i.test(normalizedPhrase)) return "iron-low";
+  return "";
+}
+
+function extractCareSymbolPhrases(text) {
+  const source = normalizeWashcareText(text);
+  if (!source) return [];
+  const matches = [];
+  const phraseMap = [
+    ["Machine Wash", /(machine\s*wash|hand\s*wash|wash\s*(dark\s*colou?rs?\s*)?separately|warm\s*40\s*[°º]?\s*c|\b40\s*[°º]?\s*c\b|\b40c\b|normal\s*cycle)/i],
+    ["Do Not Bleach", /(do\s*not\s*bleach|no\s*bleach|\bbleach\b)/i],
+    ["Line Dry In Shade", /(line\s*dry(\s*in)?\s*shade|dry\s*in\s*shade)/i],
+    ["Tumble Dry Low", /tumble\s*dry/i],
+    ["Iron Low", /(iron\s*at\s*low|iron\s*low|low\s*setting|iron\s*.*\blow\b)/i]
+  ];
+  phraseMap.forEach(([label, pattern]) => {
+    if (pattern.test(source)) matches.push(label);
+  });
+  return uniqueValues(matches);
+}
+
+function normalizeWashcareText(text) {
+  return clean(text).replace(/\s+/g, " ");
+}
+
+function uniqueValues(values = []) {
+  return [...new Set(values.map((value) => clean(value)).filter(Boolean))];
+}
+
+function renderWashcareIcon(symbol, phrase = "") {
+  const label = phrase ? ` aria-label="${esc(phrase)}" title="${esc(phrase)}"` : ' aria-hidden="true"';
+  if (symbol === "wash-40") {
+    return `<svg class="washcare-icon" viewBox="0 0 64 48" fill="none" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"${label}><path d="M10 12h44l-4 24H14z" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linejoin="round"/><path d="M14 16c4 5 8 5 12 0 4 5 8 5 12 0 4 5 8 5 12 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><text x="32" y="33" text-anchor="middle" font-size="12" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="currentColor">40C</text></svg>`;
+  }
+  if (symbol === "wash") {
+    return `<svg class="washcare-icon" viewBox="0 0 64 48" fill="none" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"${label}><path d="M10 12h44l-4 24H14z" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linejoin="round"/><path d="M14 16c4 5 8 5 12 0 4 5 8 5 12 0 4 5 8 5 12 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
+  }
+  if (symbol === "no-bleach") {
+    return `<svg class="washcare-icon" viewBox="0 0 64 48" fill="none" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"${label}><path d="M32 9l18 30H14z" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linejoin="round"/><path d="M19 12l26 24M45 12L19 36" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"/></svg>`;
+  }
+  if (symbol === "tumble-dry-low") {
+    return `<svg class="washcare-icon" viewBox="0 0 64 48" fill="none" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"${label}><rect x="12" y="8" width="40" height="32" fill="none" stroke="currentColor" stroke-width="2.3"/><circle cx="32" cy="24" r="10" fill="none" stroke="currentColor" stroke-width="2.1"/><circle cx="32" cy="24" r="2.4" fill="currentColor"/></svg>`;
+  }
+  if (symbol === "iron-low") {
+    return `<svg class="washcare-icon" viewBox="0 0 64 48" fill="none" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"${label}><path d="M14 29.5h36c.9 0 1.6-.7 1.6-1.6 0-6.8-5.4-12.5-12.1-13.2V11H22v5.5h7.2c2.9 0 5.3 1.9 6 4.4l1.8 8.6H14z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M18 34h28" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="40" cy="19" r="1.9" fill="currentColor"/></svg>`;
+  }
+  if (symbol === "line-dry-shade") {
+    return `<svg class="washcare-icon" viewBox="0 0 64 48" fill="none" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"${label}><path d="M12 10h40v28H12z" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M32 14v19" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M15 12h14L15 26z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`;
+  }
+  return "";
+}
+
 function resetStyleVariantRows(variants = [{ color: "", orderQty: "" }]) {
   if (!els.styleVariantRows) return;
   els.styleVariantRows.innerHTML = "";
@@ -2201,7 +2585,8 @@ function hasStyleTransactions(styleId) {
     || state.styleProductionEntries.some((e) => e.styleId === styleId)
     || state.productionEntries.some((e) => e.styleId === styleId)
     || state.acceptanceEntries.some((e) => e.styleId === styleId)
-    || state.dispatchEntries.some((e) => e.styleId === styleId);
+    || state.dispatchEntries.some((e) => e.styleId === styleId)
+    || state.washcareRecords.some((e) => e.styleId === styleId);
 }
 
 function handleCuttingTableAction(e) {
@@ -2244,6 +2629,14 @@ function handlePaymentTableAction(e) {
   void deleteEntry("payments", button.dataset.entryId, "payment entry");
 }
 
+function handleWashcareTableAction(e) {
+  const button = e.target.closest("[data-action]");
+  if (!button) return;
+  if (button.dataset.action === "edit-washcare") editWashcare(button.dataset.entryId);
+  if (button.dataset.action === "delete-washcare") void deleteEntry("washcareRecords", button.dataset.entryId, "washcare record");
+  if (button.dataset.action === "print-washcare") handleWashcarePrint(button.dataset.entryId);
+}
+
 async function deleteEntry(collectionName, entryId, label) {
   const entry = state[collectionName]?.find((item) => item.id === entryId);
   if (!entry) return;
@@ -2251,6 +2644,220 @@ async function deleteEntry(collectionName, entryId, label) {
   if (!confirmed) return;
   state[collectionName] = state[collectionName].filter((item) => item.id !== entryId);
   await persistState();
+}
+
+function editWashcare(entryId) {
+  const record = state.washcareRecords.find((item) => item.id === entryId);
+  if (!record) return;
+  populateWashcareForm(record);
+  els.washcareForm?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function handleWashcareStyleChange() {
+  const styleId = clean(els.washcareStyleSelect?.value);
+  if (!styleId) {
+    delete els.washcareForm.dataset.editId;
+    renderWashcarePreview();
+    return;
+  }
+  populateWashcareFormByStyle(styleId);
+}
+
+async function seedWashcareFromReportFile(e) {
+  const file = e.target.files?.[0];
+  if (!file || !els.washcareForm) return;
+  if (els.washcareSeedStatus) {
+    els.washcareSeedStatus.textContent = `Reading test report: ${file.name}`;
+  }
+  try {
+    const extracted = await extractWashcareReportDetails(file);
+    els.washcareForm.reportSourceName.value = file.name;
+    if (extracted.reportNumber && !clean(els.washcareForm.reportNumber.value)) els.washcareForm.reportNumber.value = extracted.reportNumber;
+    if (extracted.reportDate && !clean(els.washcareForm.reportDate.value)) els.washcareForm.reportDate.value = extracted.reportDate;
+    if (extracted.labName && !clean(els.washcareForm.labName.value)) els.washcareForm.labName.value = extracted.labName;
+    if (extracted.reportStyleCode) els.washcareForm.reportStyleCode.value = extracted.reportStyleCode;
+    if (extracted.reportColor) els.washcareForm.reportColor.value = extracted.reportColor;
+    if (extracted.reportBrand) els.washcareForm.reportBrand.value = extracted.reportBrand;
+    if (extracted.reportSupplier) els.washcareForm.reportSupplier.value = extracted.reportSupplier;
+    if (extracted.composition) els.washcareForm.composition.value = extracted.composition;
+    if (extracted.washcareText) els.washcareForm.washcareText.value = extracted.washcareText;
+    if (extracted.careSymbols.length) els.washcareForm.careSymbols.value = extracted.careSymbols.join(", ");
+    if (!clean(els.washcareForm.templatePath.value)) els.washcareForm.templatePath.value = DEFAULT_WASHCARE_TEMPLATE_PATH;
+    renderWashcarePreview();
+    if (els.washcareSeedStatus) {
+      els.washcareSeedStatus.textContent = `Seeded washcare from ${file.name}. Please confirm the style mapping and print command.`;
+    }
+  } catch (error) {
+    console.error(error);
+    if (els.washcareSeedStatus) {
+      els.washcareSeedStatus.textContent = "Could not read this test report automatically in local file mode. Try the launcher file or fill the washcare manually.";
+    }
+    alert("Could not read the selected test report PDF. Please try opening the app with 'Launch Piece Rate Calculator.cmd' and upload the PDF again.");
+  } finally {
+    if (els.washcareReportInput) els.washcareReportInput.value = "";
+  }
+}
+
+async function extractWashcareReportDetails(file) {
+  if (/^https?:\/\/(127\.0\.0\.1|localhost):3100/i.test(clean(window.location?.origin))) {
+    try {
+      return await extractWashcareReportDetailsViaServer(file);
+    } catch (error) {
+      console.error("Server-side PDF extraction failed, falling back to browser parser.", error);
+    }
+  }
+  if (!window.pdfjsLib?.getDocument) {
+    throw new Error("PDF library not loaded.");
+  }
+  const arrayBuffer = await file.arrayBuffer();
+  const loadingTask = window.pdfjsLib.getDocument({
+    data: arrayBuffer,
+    disableWorker: true,
+    isEvalSupported: false,
+    useWorkerFetch: false
+  });
+  const pdf = await loadingTask.promise;
+  const texts = [];
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const content = await page.getTextContent();
+    texts.push(content.items.map((item) => item.str).join(" "));
+  }
+  const fullText = texts.join("\n");
+  const normalized = fullText.replace(/\s+/g, " ").trim();
+  const submittedWashcare = extractReportField(normalized, /Submitted Wash Care\s*:?\s*(.+?)\s*Test Name/i);
+  const composition = extractReportField(normalized, /Fiber Content\s*:?\s*(.+?)\s*Fabric Code/i);
+  const reportNumber = extractReportField(normalized, /\b(RRLD\d{8,})\b/i);
+  const reportDate = normalizeDateValue(extractReportField(normalized, /Received date\s+(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})/i) || extractReportField(normalized, /Report No\.\s*:?\s*(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})/i));
+  const labName = normalized.includes("Reliance Trends PRODUCT TESTING LABORATORY".replace(/\s+/g, " "))
+    ? "Reliance Trends Product Testing Laboratory"
+    : "Testing Laboratory";
+  return {
+    reportNumber,
+    reportDate,
+    labName,
+    reportStyleCode: extractReportField(normalized, /Style Code\s*:?\s*(.+?)\s*No\.?\s*of Sample/i),
+    reportColor: extractReportField(normalized, /Color\s*:?\s*(.+?)\s*Style Code/i),
+    reportBrand: extractReportField(normalized, /Brand\s*:?\s*(.+?)\s*Supplier\s*:/i),
+    reportSupplier: extractReportField(normalized, /Supplier\s*:?\s*(.+?)\s*Trf ID/i) || extractReportField(normalized, /Mill Supplier\s*:?\s*(.+?)\s*Type of Testing/i),
+    composition,
+    washcareText: submittedWashcare,
+    careSymbols: parseWashcareSymbols((submittedWashcare || "").replace(/,\s*/g, ", "))
+  };
+}
+
+async function extractWashcareReportDetailsViaServer(file) {
+  const response = await fetch("/extract-washcare-report", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/pdf"
+    },
+    body: file
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data) {
+    throw new Error(data?.details || data?.error || `Server extraction failed with HTTP ${response.status}.`);
+  }
+  return {
+    reportNumber: clean(data.reportNumber),
+    reportDate: normalizeDateValue(data.reportDate),
+    labName: clean(data.labName),
+    reportStyleCode: clean(data.reportStyleCode),
+    reportColor: clean(data.reportColor),
+    reportBrand: clean(data.reportBrand),
+    reportSupplier: clean(data.reportSupplier),
+    composition: clean(data.composition),
+    washcareText: clean(data.washcareText),
+    careSymbols: parseWashcareSymbols(clean(data.washcareText).replace(/,\s*/g, ", "))
+  };
+}
+
+function extractReportField(text, pattern) {
+  const match = text.match(pattern);
+  return clean(match?.[1] || "");
+}
+
+function generateWashcarePrintCommand({ templatePath } = {}) {
+  const resolvedTemplatePath = clean(templatePath) || DEFAULT_WASHCARE_TEMPLATE_PATH;
+  if (!resolvedTemplatePath) return "";
+  const escapedTemplatePath = resolvedTemplatePath.replace(/"/g, '""');
+  return `bartend.exe /F="${escapedTemplatePath}" /P /X`;
+}
+
+async function copyWashcareCommand(recordOrEntryId = null) {
+  const preview = typeof recordOrEntryId === "string"
+    ? getWashcarePreviewData(state.washcareRecords.find((item) => item.id === recordOrEntryId) || null)
+    : getWashcarePreviewData();
+  if (!preview.style) {
+    alert("Please select a style first.");
+    return;
+  }
+  const command = clean(preview.printCommand);
+  if (!command) {
+    alert("No .btw template path is available yet. Please set the Template Path first.");
+    return;
+  }
+  if (els.washcareForm?.printCommand && typeof recordOrEntryId !== "string" && !clean(els.washcareForm.printCommand.value)) {
+    els.washcareForm.printCommand.value = command;
+  }
+  try {
+    await navigator.clipboard.writeText(command);
+    if (els.washcareSeedStatus) {
+      els.washcareSeedStatus.textContent = `Print command copied to clipboard: ${command}`;
+    }
+  } catch {
+    window.prompt("Copy the print command below:", command);
+  }
+}
+
+async function handleWashcarePrint(recordOrEntryId = null) {
+  const record = typeof recordOrEntryId === "string"
+    ? state.washcareRecords.find((item) => item.id === recordOrEntryId) || null
+    : null;
+  const preview = getWashcarePreviewData(record);
+  if (!preview.style) {
+    alert("Please select a style first.");
+    return;
+  }
+  const method = preview.printMethod || "browser";
+  if (method === "command") {
+    await copyWashcareCommand(recordOrEntryId);
+    return;
+  }
+  const printWindow = window.open("", "_blank", "width=900,height=700");
+  if (!printWindow) {
+    alert("Pop-up blocked. Please allow pop-ups and try again.");
+    return;
+  }
+  printWindow.document.write(`<!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <title>Washcare Print</title>
+    <style>
+      @page { size: ${num(preview.labelWidthMm) || DEFAULT_WASHCARE_LABEL_WIDTH_MM}mm ${num(preview.labelLengthMm) || DEFAULT_WASHCARE_LABEL_LENGTH_MM}mm; margin: 0; }
+      html, body { margin: 0; padding: 0; background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; }
+      body { display: flex; justify-content: center; }
+      .sheet { width: ${num(preview.labelWidthMm) || DEFAULT_WASHCARE_LABEL_WIDTH_MM}mm; min-height: ${num(preview.labelLengthMm) || DEFAULT_WASHCARE_LABEL_LENGTH_MM}mm; box-sizing: border-box; display: flex; }
+      .washcare-label { width: 100%; min-height: 100%; box-sizing: border-box; padding: 6mm 3mm; display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: 5mm; text-align: center; }
+      .washcare-label-composition { font-size: var(--washcare-composition-size, 22px); font-weight: 700; line-height: 1.2; }
+      .washcare-label-icons { min-height: 10mm; display: flex; align-items: center; justify-content: center; gap: var(--washcare-symbol-gap, 6px); flex-wrap: nowrap; }
+      .washcare-icon { width: var(--washcare-symbol-size, 30px); height: calc(var(--washcare-symbol-size, 30px) * 0.8); color: #000; }
+      .washcare-symbol-text { font-size: 2.4mm; font-weight: 700; }
+      .washcare-label-text { font-size: var(--washcare-text-size, 16px); font-weight: 700; line-height: 1.35; letter-spacing: .02em; }
+      .washcare-label-footer { margin-top: auto; font-size: 4mm; font-weight: 700; line-height: 1.35; }
+    </style>
+  </head>
+  <body>
+    <div class="sheet">${buildWashcarePreviewMarkup(preview)}</div>
+  </body>
+  </html>`);
+  printWindow.document.close();
+  printWindow.focus();
+  printWindow.print();
+  if (method === "both") {
+    await copyWashcareCommand(recordOrEntryId);
+  }
 }
 
 function editCutting(entryId) {
@@ -2670,6 +3277,28 @@ function normalizeState() {
   state.dispatchEntries = (Array.isArray(state.dispatchEntries) ? state.dispatchEntries : []).map((entry) => ({
     ...entry,
     date: normalizeDateValue(entry.date)
+  }));
+  state.washcareRecords = (Array.isArray(state.washcareRecords) ? state.washcareRecords : []).map((record) => ({
+    ...record,
+    reportDate: normalizeDateValue(record.reportDate),
+    careSymbols: Array.isArray(record.careSymbols) ? record.careSymbols.map((item) => clean(item)).filter(Boolean) : parseWashcareSymbols(record.careSymbols),
+    printMethod: clean(record.printMethod) || "browser",
+    templatePath: clean(record.templatePath) || DEFAULT_WASHCARE_TEMPLATE_PATH,
+    labelWidthMm: clampWashcareDimension(record.labelWidthMm, DEFAULT_WASHCARE_LABEL_WIDTH_MM),
+    labelLengthMm: clampWashcareDimension(record.labelLengthMm, DEFAULT_WASHCARE_LABEL_LENGTH_MM),
+    reportSourceName: clean(record.reportSourceName),
+    reportStyleCode: clean(record.reportStyleCode),
+    reportColor: clean(record.reportColor),
+    reportBrand: clean(record.reportBrand),
+    reportSupplier: clean(record.reportSupplier),
+    compositionFontSize: clampWashcareSize(record.compositionFontSize, 22),
+    symbolSize: clampWashcareSize(record.symbolSize, 30),
+    symbolGap: clampWashcareSize(record.symbolGap, 6),
+    washcareFontSize: clampWashcareSize(record.washcareFontSize, 16),
+    originLine: clean(record.originLine) || "MADE IN INDIA",
+    footerLine1: clean(record.footerLine1),
+    footerLine2: clean(record.footerLine2),
+    updatedAt: clean(record.updatedAt)
   }));
   state.payments = (Array.isArray(state.payments) ? state.payments : []).map((payment) => ({
     ...payment,

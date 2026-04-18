@@ -8,6 +8,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.js"></script>
   <script src="config.js"></script>
 </head>
 <body>
@@ -25,6 +26,7 @@
         <button class="nav-link" data-tab="acceptance">Acceptance Entry</button>
         <button class="nav-link" data-tab="dispatch">Dispatch Entry</button>
         <button class="nav-link" data-tab="reports">Reports</button>
+        <button class="nav-link" data-tab="washcare">Washcare</button>
       </nav>
       <div class="sidebar-card">
         <h2>Data</h2>
@@ -389,6 +391,75 @@
           </section>
         </div>
       </section>
+
+      <section class="tab-panel" id="washcare">
+        <div class="panel-header"><div><p class="eyebrow">Washcare</p><h2>Style Washcare Preview and Print</h2></div></div>
+        <div class="grid-two">
+          <section class="card">
+            <div class="section-title">
+              <div>
+                <h3>Washcare Master</h3>
+                <p class="field-hint">Save washcare against each style now. Later the user can just select the style, preview the washcare, and print.</p>
+              </div>
+            </div>
+            <form id="washcareForm" class="form-grid">
+              <label>Search Style<input type="text" id="washcareStyleSearch" placeholder="Full style no. or last 2-3 digits"></label>
+              <label>Style<select name="styleId" required id="washcareStyleSelect"></select></label>
+              <label>Report Number<input type="text" name="reportNumber" placeholder="Test report no."></label>
+              <label>Report Date<input type="date" name="reportDate"></label>
+              <label>Lab / Source<input type="text" name="labName" placeholder="Lab or received from"></label>
+              <label>Template Name<input type="text" name="templateName" placeholder="Washcare template"></label>
+              <label>Template Path<input type="text" name="templatePath" placeholder="C:\\Path\\To\\Washcare.btw"></label>
+              <label>Print Method
+                <select name="printMethod">
+                  <option value="browser">Browser Preview Print</option>
+                  <option value="command">Copy Print Command</option>
+                  <option value="both">Preview Print + Copy Command</option>
+                </select>
+              </label>
+              <label>Print Command<input type="text" name="printCommand" placeholder="Will be finalized after .btw file is shared"></label>
+              <label>Label Width (mm)<input type="number" name="labelWidthMm" min="10" max="200" step="0.1" placeholder="35.5"></label>
+              <label>Label Length (mm)<input type="number" name="labelLengthMm" min="10" max="400" step="0.1" placeholder="100"></label>
+              <label class="full-span ghost file-label">Upload Test Report PDF<input type="file" id="washcareReportInput" accept=".pdf,application/pdf"></label>
+              <label>Report File<input type="text" name="reportSourceName" placeholder="Auto-filled from uploaded PDF"></label>
+              <label>Report Style Code<input type="text" name="reportStyleCode" placeholder="Auto-filled from test report"></label>
+              <label>Report Color<input type="text" name="reportColor" placeholder="Auto-filled from test report"></label>
+              <label>Brand<input type="text" name="reportBrand" placeholder="Auto-filled from test report"></label>
+              <label>Supplier<input type="text" name="reportSupplier" placeholder="Auto-filled from test report"></label>
+              <label class="full-span">Composition<input type="text" name="composition" placeholder="100% Cotton / 60% Cotton 40% Polyester"></label>
+              <label>Composition Font Size<input type="number" name="compositionFontSize" min="10" max="40" step="1" placeholder="22"></label>
+              <label class="full-span">Care Symbols<input type="text" name="careSymbols" placeholder="Machine Wash, Do Not Bleach, Iron Low"></label>
+              <label>Symbol Size<input type="number" name="symbolSize" min="16" max="48" step="1" placeholder="30"></label>
+              <label>Symbol Gap<input type="number" name="symbolGap" min="0" max="20" step="1" placeholder="6"></label>
+              <label class="full-span">Washcare Text<textarea name="washcareText" rows="5" placeholder="Enter washcare lines exactly as they should appear on the label."></textarea></label>
+              <label>Washcare Font Size<input type="number" name="washcareFontSize" min="10" max="28" step="1" placeholder="16"></label>
+              <label>Origin Line<input type="text" name="originLine" placeholder="MADE IN INDIA"></label>
+              <label>Footer Line 1<input type="text" name="footerLine1" placeholder="EC-L-46"></label>
+              <label>Footer Line 2<input type="text" name="footerLine2" placeholder="32023624"></label>
+              <label class="full-span">Additional Notes<textarea name="notes" rows="3" placeholder="Extra note, barcode ref, special handling, etc."></textarea></label>
+              <div class="full-span action-row">
+                <button type="submit">Save Washcare</button>
+                <button type="button" class="ghost" id="printWashcareBtn">Print Preview</button>
+                <button type="button" class="ghost" id="copyWashcareCommandBtn">Copy Print Command</button>
+                <button type="reset" class="ghost">Clear</button>
+              </div>
+              <p class="full-span field-hint" id="washcareSeedStatus">Auto-seeding from uploaded test-report PDF and direct `.btw` printing will be completed after you share one sample report and one washcare template.</p>
+            </form>
+          </section>
+          <section class="card">
+            <div class="section-title"><h3>Preview</h3></div>
+            <div id="washcarePreview" class="washcare-preview empty-state">Select a style and enter washcare details to preview the label.</div>
+          </section>
+        </div>
+        <section class="card washcare-records-card">
+          <div class="section-title"><h3>Saved Washcare</h3></div>
+          <label class="list-search">
+            Search Saved Washcare
+            <input type="text" id="washcareSearch" placeholder="Search style, report number, composition">
+          </label>
+          <div class="table-wrap"><table><thead><tr><th>Style</th><th>Report No.</th><th>Report Date</th><th>Template</th><th>Print Method</th><th>Updated</th><th>Action</th></tr></thead><tbody id="washcareTable"></tbody></table></div>
+        </section>
+      </section>
     </main>
   </div>
 
@@ -417,6 +488,6 @@
       <button type="button" class="ghost remove-style-variant">Remove</button>
     </div>
   </template>
-  <script src="app.js?v=2026-04-16-3"></script>
+  <script src="app.js?v=2026-04-18-1"></script>
 </body>
 </html>

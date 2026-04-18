@@ -148,6 +148,7 @@ button:hover, .file-label:hover { transform: translateY(-1px); background: var(-
   padding-right: 6px;
 }
 .report-controls { margin-bottom: 18px; }
+.washcare-records-card { margin-top: 18px; }
 .tally-card { margin-top: 18px; }
 .tally-grid { margin-top: 18px; }
 .tally-table-wrap td,
@@ -211,6 +212,83 @@ th { color: var(--muted); font-size: .9rem; }
   color: var(--accent-dark);
 }
 .empty-state { color: var(--muted); padding: 14px 0; }
+.washcare-preview {
+  min-height: 100%;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: #eef3f7;
+  padding: 20px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.washcare-preview.empty-state {
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+.washcare-label {
+  --washcare-composition-size: 22px;
+  --washcare-symbol-size: 30px;
+  --washcare-symbol-gap: 6px;
+  --washcare-text-size: 16px;
+  --washcare-label-width: 35.5mm;
+  --washcare-label-length: 100mm;
+  width: var(--washcare-label-width);
+  min-height: var(--washcare-label-length);
+  background: #fff;
+  color: #000;
+  border-radius: 2px;
+  box-shadow: 0 20px 40px rgba(34, 63, 92, 0.18);
+  box-sizing: border-box;
+  padding: 34px 16px 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 22px;
+  text-align: center;
+}
+.washcare-label-composition {
+  font-size: var(--washcare-composition-size);
+  font-weight: 800;
+  line-height: 1.15;
+}
+.washcare-label-icons {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--washcare-symbol-gap);
+  flex-wrap: nowrap;
+}
+.washcare-icon {
+  width: var(--washcare-symbol-size);
+  height: calc(var(--washcare-symbol-size) * 0.8);
+  color: #000;
+  display: block;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+.washcare-symbol-text {
+  font-size: 11px;
+  font-weight: 700;
+}
+.washcare-label-text {
+  font-size: var(--washcare-text-size);
+  font-weight: 800;
+  line-height: 1.35;
+  letter-spacing: .03em;
+}
+.washcare-label-text div + div {
+  margin-top: 2px;
+}
+.washcare-label-footer {
+  margin-top: auto;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.45;
+}
 .text-success { color: var(--success); }
 .text-danger { color: var(--danger); }
 .image-modal[hidden] { display: none; }
