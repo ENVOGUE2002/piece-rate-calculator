@@ -149,6 +149,31 @@ button:hover, .file-label:hover { transform: translateY(-1px); background: var(-
 }
 .report-controls { margin-bottom: 18px; }
 .washcare-records-card { margin-top: 18px; }
+.grn-items-card { margin-top: 18px; }
+.grn-summary-cards { margin-top: 16px; }
+.grn-header-summary {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: linear-gradient(180deg, #fffefb 0%, #faf1e3 100%);
+  padding: 16px;
+}
+.grn-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.grn-meta-grid div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.grn-meta-grid strong {
+  color: var(--muted);
+  font-size: .82rem;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
 .tally-card { margin-top: 18px; }
 .tally-grid { margin-top: 18px; }
 .tally-table-wrap td,

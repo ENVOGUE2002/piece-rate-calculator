@@ -1,5 +1,8 @@
 
 const STORAGE_KEY = "piece-rate-calculator-v1";
+const STYLE_IMAGE_DB_NAME = "piece-rate-calculator-images";
+const STYLE_IMAGE_STORE = "style-images";
+const STORED_IMAGE_PREFIX = "stored-image:";
 const DEFAULT_SIZE_LIST = ["XS", "S", "M", "L", "XL", "XXL"];
 const DEFAULT_WASHCARE_TEMPLATE_PATH = "C:\\Users\\Lenovo\\Downloads\\SHEIN WASHCARE.btw";
 const DEFAULT_WASHCARE_LABEL_WIDTH_MM = 35.5;
@@ -19,6 +22,38 @@ const DEFAULTS = {
   productionEntries: [],
   acceptanceEntries: [],
   dispatchEntries: [],
+  grnStatus: {
+    id: "",
+    grnFileName: "",
+    grnNumber: "",
+    grnDate: "",
+    supplier: "",
+    supplierCode: "",
+    supplierGstin: "",
+    vendorInvoiceNo: "",
+    poNumber: "",
+    poDate: "",
+    deliveryNo: "",
+    consignee: "",
+    warehouse: "",
+    transporterName: "",
+    consignmentNote: "",
+    consignmentDate: "",
+    vehicleNumber: "",
+    deliveryChallanNo: "",
+    totalChallanQty: 0,
+    totalReceivedQty: 0,
+    totalAcceptedQty: 0,
+    totalShortQty: 0,
+    items: [],
+    packingListFileName: "",
+    packingItems: [],
+    packingListInvoiceNo: "",
+    packingListRawText: "",
+    comparisonRows: [],
+    updatedAt: ""
+  },
+  grnReports: [],
   washcareRecords: [],
   payments: [],
   tallyCreditors: {
@@ -56,6 +91,7 @@ let isSyncing = false;
 let pastedStyleImageDataUrl = "";
 let activeSharedSection = "";
 let pendingStyleImportFile = null;
+let styleImageCache = new Map();
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -107,6 +143,17 @@ const els = {
   dispatchSizeRows: $("dispatchSizeRows"),
   dispatchEntriesTable: $("dispatchEntriesTable"),
   dispatchEntriesSearch: $("dispatchEntriesSearch"),
+  grnPdfInput: $("grnPdfInput"),
+  grnPackingListInput: $("grnPackingListInput"),
+  grnStatusText: $("grnStatusText"),
+  grnHeaderSummary: $("grnHeaderSummary"),
+  grnSummaryCards: $("grnSummaryCards"),
+  grnItemsTable: $("grnItemsTable"),
+  grnComparisonTable: $("grnComparisonTable"),
+  grnSavedTable: $("grnSavedTable"),
+  saveGrnReportBtn: $("saveGrnReportBtn"),
+  downloadGrnSheetBtn: $("downloadGrnSheetBtn"),
+  downloadAllGrnBtn: $("downloadAllGrnBtn"),
   washcareForm: $("washcareForm"),
   washcareStyleSearch: $("washcareStyleSearch"),
   washcareStyleSelect: $("washcareStyleSelect"),
@@ -165,6 +212,9 @@ const els = {
   importInput: $("importInput"),
   styleImportInput: $("styleImportInput"),
   styleImageImportInput: $("styleImageImportInput"),
+  skipExistingStylesToggle: $("skipExistingStylesToggle"),
+  downloadPendingCmtSheet: $("downloadPendingCmtSheet"),
+  cmtUpdateImportInput: $("cmtUpdateImportInput"),
   styleImageFile: $("styleImageFile"),
   pasteStyleImageBtn: $("pasteStyleImageBtn"),
   styleImagePasteStatus: $("styleImagePasteStatus"),
@@ -187,6 +237,8 @@ init().catch((error) => {
 async function init() {
   state = await loadInitialState();
   normalizeState();
+  await loadStoredStyleImages();
+  await migrateInlineStyleImages();
   configurePdfJs();
   bindTabs();
   seedOperationRows();
@@ -370,10 +422,17 @@ function bindForms() {
   els.importInput.addEventListener("change", importData);
   els.styleImportInput.addEventListener("change", importStylesCsv);
   els.styleImageImportInput?.addEventListener("change", importStylesCsvFromPendingSelection);
+  els.downloadPendingCmtSheet?.addEventListener("click", downloadPendingCmtSheet);
+  els.cmtUpdateImportInput?.addEventListener("change", importCmtUpdateSheet);
   els.cuttingImportInput.addEventListener("change", importCuttingCsv);
   els.styleProductionImportInput?.addEventListener("change", importStyleProductionCsv);
   els.productionImportInput.addEventListener("change", importProductionCsv);
   els.pasteStyleImageBtn?.addEventListener("click", pasteStyleImageFromClipboard);
+  els.grnPdfInput?.addEventListener("change", importGrnPdf);
+  els.grnPackingListInput?.addEventListener("change", importPackingListPdf);
+  els.saveGrnReportBtn?.addEventListener("click", saveCurrentGrnReport);
+  els.downloadGrnSheetBtn?.addEventListener("click", downloadGrnSheetWorkbook);
+  els.downloadAllGrnBtn?.addEventListener("click", downloadAllGrnWorkbook);
   els.washcareStyleSelect?.addEventListener("change", handleWashcareStyleChange);
   els.washcareReportInput?.addEventListener("change", seedWashcareFromReportFile);
   els.printWashcareBtn?.addEventListener("click", handleWashcarePrint);
@@ -429,6 +488,7 @@ async function saveStyle(e) {
   const imageValue = clean(f.get("image"));
   const uploadedImage = uploadedFile ? await fileToDataUrl(uploadedFile) : null;
   const existingStyle = editId ? byId(editId) : null;
+  const existingImageSrc = styleImageSrc(existingStyle);
 
   if (editId) {
     const variant = variants[0];
@@ -445,7 +505,7 @@ async function saveStyle(e) {
       orderQty: variant.orderQty,
       cmtRate: num(f.get("cmtRate")),
       serviceChargePct: num(f.get("serviceChargePct")),
-      image: uploadedImage || pastedStyleImageDataUrl || imageValue || existingStyle?.image || "",
+      image: await prepareStyleImageForState(uploadedImage || pastedStyleImageDataUrl || imageValue || existingImageSrc || "", editId),
       notes: clean(f.get("notes")),
       operations
     });
@@ -460,8 +520,9 @@ async function saveStyle(e) {
       }
     }
     variants.forEach((variant) => {
+      const styleId = uid();
       state.styles.push(buildStylePayload({
-        id: uid(),
+        id: styleId,
         styleNumber,
         buyerName: clean(f.get("buyerName")),
         styleName: clean(f.get("styleName")),
@@ -469,11 +530,14 @@ async function saveStyle(e) {
         orderQty: variant.orderQty,
         cmtRate: num(f.get("cmtRate")),
         serviceChargePct: num(f.get("serviceChargePct")),
-        image: uploadedImage || pastedStyleImageDataUrl || imageValue || "",
+        image: "",
         notes: clean(f.get("notes")),
         operations
       }));
     });
+    for (const style of state.styles.filter((item) => item.styleNumber === styleNumber && variants.some((variant) => clean(variant.color).toLowerCase() === clean(item.color).toLowerCase()) && !item.image)) {
+      style.image = await prepareStyleImageForState(uploadedImage || pastedStyleImageDataUrl || imageValue || "", style.id);
+    }
   }
 
   resetStyleFormState();
@@ -695,6 +759,7 @@ function render() {
   renderProduction();
   renderAcceptance();
   renderDispatch();
+  renderGrnStatus();
   renderWashcare();
   renderDashboard();
   renderReports();
@@ -739,12 +804,12 @@ function renderStyles() {
   const filteredStyles = filterStyles(els.styleCardSearch?.value || "");
   els.styleCards.innerHTML = filteredStyles.length ? filteredStyles.map((style) => `
     <article class="style-card">
-      ${style.image ? `
+      ${styleImageSrc(style) ? `
         <div class="style-media">
-          <img class="style-thumb" src="${escAttr(style.image)}" alt="${escAttr(style.styleNumber)}">
+          <img class="style-thumb" src="${escAttr(styleImageSrc(style))}" alt="${escAttr(style.styleNumber)}">
           <div class="style-preview-meta">
             <span class="chip">Full image available</span>
-            <button type="button" class="ghost small preview-link" data-action="preview-image" data-image-src="${escAttr(style.image)}" data-image-title="${escAttr(styleLabel(style))}">Preview Full Image</button>
+            <button type="button" class="ghost small preview-link" data-action="preview-image" data-image-src="${escAttr(styleImageSrc(style))}" data-image-title="${escAttr(styleLabel(style))}">Preview Full Image</button>
           </div>
         </div>` : ""}
       <h4>${esc(style.styleNumber)}${style.styleName ? ` - ${esc(style.styleName)}` : ""}</h4>
@@ -753,7 +818,7 @@ function renderStyles() {
       <p><strong>Order Qty:</strong> ${fmtInt(style.orderQty || 0)}</p>
       <p><strong>Total CMT:</strong> Rs ${fmt(style.cmtRate)}</p>
       <p><strong>Service Charge:</strong> ${fmt(style.serviceChargePct || 0)}%</p>
-      <p><strong>Image:</strong> ${style.image ? "Uploaded" : "-"}</p>
+      <p><strong>Image:</strong> ${styleImageSrc(style) ? "Uploaded" : "-"}</p>
       <div class="chip-row">${style.operations.map((o) => `<span class="chip">${esc(o.operationName)}: Rs ${fmt(o.rate)}</span>`).join("") || "<span class='chip'>No operations</span>"}</div>
       <div class="card-actions">
         <button type="button" class="ghost small" data-action="edit-style" data-style-id="${style.id}">Edit</button>
@@ -814,6 +879,95 @@ function renderDispatch() {
   }).map((entry) => `
     <tr><td>${esc(entry.date)}</td><td>${esc(styleLabel(byId(entry.styleId)))}</td><td>${fmtInt(sumObj(entry.quantities))}</td><td>${esc(formatQuantities(entry.quantities))}</td><td>${esc(entry.remarks || "-")}</td><td><button type="button" class="ghost small" data-action="edit-dispatch" data-entry-id="${entry.id}">Edit</button> <button type="button" class="ghost small" data-action="delete-dispatch" data-entry-id="${entry.id}">Delete</button></td></tr>`);
   els.dispatchEntriesTable.innerHTML = rowsOrEmpty(rows, 6, "No dispatch entries recorded.");
+}
+
+function renderGrnStatus() {
+  const grn = state.grnStatus || clone(DEFAULTS.grnStatus);
+  if (els.grnStatusText) {
+    els.grnStatusText.textContent = grn.grnFileName
+      ? `Loaded GRN ${grn.grnNumber || "-"} from ${grn.grnFileName}${grn.packingListFileName ? ` and packing list ${grn.packingListFileName}` : ""}.`
+      : "Upload a GRN PDF to extract the complete detail sheet.";
+  }
+  if (els.grnHeaderSummary) {
+    els.grnHeaderSummary.classList.toggle("empty-state", !grn.grnFileName);
+    els.grnHeaderSummary.innerHTML = grn.grnFileName ? buildGrnHeaderSummaryMarkup(grn) : "No GRN uploaded yet.";
+  }
+  if (els.grnSummaryCards) {
+    const cards = [
+      { label: "GRN Challan Qty", value: fmtInt(grn.totalChallanQty || 0) },
+      { label: "Received Qty", value: fmtInt(grn.totalReceivedQty || 0) },
+      { label: "Accepted Qty", value: fmtInt(grn.totalAcceptedQty || 0) },
+      { label: "Short Qty", value: fmtInt(grn.totalShortQty || 0) },
+      { label: "Packing List Qty", value: fmtInt((grn.comparisonRows || []).reduce((sum, row) => sum + num(row.packingQty), 0)) },
+      { label: "Invoice Shortage", value: fmtInt((grn.comparisonRows || []).reduce((sum, row) => sum + Math.max(num(row.shortageQty), 0), 0)) }
+    ];
+    els.grnSummaryCards.innerHTML = cards.map((card) => `<article class="stat-card"><p>${esc(card.label)}</p><strong>${esc(card.value)}</strong></article>`).join("");
+  }
+  if (els.grnItemsTable) {
+    const rows = (grn.items || []).map((item) => `
+      <tr>
+        <td>${fmtInt(item.serialNo)}</td>
+        <td>${esc(item.article || "-")}</td>
+        <td>${esc(item.description || "-")}</td>
+        <td>${esc(item.ean || "-")}</td>
+        <td>${esc(item.vendorArticleNo || "-")}</td>
+        <td>${esc(item.uom || "-")}</td>
+        <td>${fmtInt(item.challanQty)}</td>
+        <td>${fmtInt(item.receivedQty)}</td>
+        <td>${fmtInt(item.acceptedQty)}</td>
+        <td>${fmtInt(item.shortQty)}</td>
+        <td>${esc(item.reason || "-")}</td>
+      </tr>`);
+    els.grnItemsTable.innerHTML = rowsOrEmpty(rows, 11, "No GRN detail sheet available yet.");
+  }
+  if (els.grnComparisonTable) {
+    const rows = (grn.comparisonRows || []).map((row) => `
+      <tr>
+        <td>${esc(row.matchLabel || "-")}</td>
+        <td>${fmtInt(row.packingQty)}</td>
+        <td>${fmtInt(row.challanQty)}</td>
+        <td>${fmtInt(row.acceptedQty)}</td>
+        <td>${fmtInt(row.shortageQty)}</td>
+        <td><span class="status-chip ${num(row.shortageQty) > 0 ? "pending" : "paid"}">${esc(num(row.shortageQty) > 0 ? "Short" : "Matched")}</span></td>
+      </tr>`);
+    els.grnComparisonTable.innerHTML = rowsOrEmpty(rows, 6, "Upload the packing list later to compare invoice quantity with GRN accepted quantity.");
+  }
+  if (els.grnSavedTable) {
+    const rows = (state.grnReports || [])
+      .slice()
+      .sort((a, b) => clean(b.updatedAt).localeCompare(clean(a.updatedAt)))
+      .map((report) => `
+        <tr>
+          <td>${esc(report.grnNumber || "-")}</td>
+          <td>${esc(report.grnDate || "-")}</td>
+          <td>${esc(report.vendorInvoiceNo || "-")}</td>
+          <td>${esc(report.poNumber || "-")}</td>
+          <td>${esc(report.supplier || "-")}</td>
+          <td>${fmtInt(report.totalAcceptedQty || 0)}</td>
+          <td>${fmtInt(report.totalShortQty || 0)}</td>
+          <td>${esc(formatDateTimeDisplay(report.updatedAt) || "-")}</td>
+        </tr>`);
+    els.grnSavedTable.innerHTML = rowsOrEmpty(rows, 8, "No saved GRN reports yet.");
+  }
+}
+
+function buildGrnHeaderSummaryMarkup(grn) {
+  return `
+    <div class="grn-meta-grid">
+      <div><strong>GRN No.</strong><span>${esc(grn.grnNumber || "-")}</span></div>
+      <div><strong>GRN Date</strong><span>${esc(grn.grnDate || "-")}</span></div>
+      <div><strong>Supplier</strong><span>${esc(grn.supplier || "-")}</span></div>
+      <div><strong>Vendor Code</strong><span>${esc(grn.supplierCode || "-")}</span></div>
+      <div><strong>Invoice No.</strong><span>${esc(grn.vendorInvoiceNo || "-")}</span></div>
+      <div><strong>PO No.</strong><span>${esc(grn.poNumber || "-")}</span></div>
+      <div><strong>Delivery No.</strong><span>${esc(grn.deliveryNo || "-")}</span></div>
+      <div><strong>Warehouse</strong><span>${esc(grn.warehouse || grn.consignee || "-")}</span></div>
+      <div><strong>Transporter</strong><span>${esc(grn.transporterName || "-")}</span></div>
+      <div><strong>Vehicle No.</strong><span>${esc(grn.vehicleNumber || "-")}</span></div>
+      <div><strong>Consignment</strong><span>${esc(grn.consignmentNote || "-")}</span></div>
+      <div><strong>Packing List</strong><span>${esc(grn.packingListFileName || "-")}</span></div>
+    </div>
+  `;
 }
 
 function renderWashcare() {
@@ -1663,6 +1817,25 @@ function buildStylePayload(payload) {
   };
 }
 
+function styleImageSrc(style) {
+  const rawValue = clean(style?.image || "");
+  if (!rawValue) return "";
+  if (isStoredImageRef(rawValue)) return styleImageCache.get(storedImageKey(rawValue)) || "";
+  return rawValue;
+}
+
+function isStoredImageRef(value) {
+  return clean(value).startsWith(STORED_IMAGE_PREFIX);
+}
+
+function storedImageRef(styleId) {
+  return `${STORED_IMAGE_PREFIX}${styleId}`;
+}
+
+function storedImageKey(value) {
+  return clean(value).slice(STORED_IMAGE_PREFIX.length);
+}
+
 function parseWashcareSymbols(value) {
   const raw = String(value || "");
   const parts = raw
@@ -1974,7 +2147,7 @@ function styleBillingRows(reportDate = "") {
       styleId: style.id,
       styleNumber: style.styleNumber,
       color: style.color,
-      image: style.image || "",
+      image: styleImageSrc(style),
       orderQty: num(style.orderQty),
       cutQty,
       producedQty,
@@ -2038,9 +2211,9 @@ function cuttingReportRows(reportDate = "") {
     .sort((a, b) => clean(b.date).localeCompare(clean(a.date)))
     .map((entry) => {
       const style = byId(entry.styleId);
-      return {
-        date: entry.date,
-        image: style?.image || "",
+        return {
+          date: entry.date,
+          image: styleImageSrc(style),
         styleNumber: style?.styleNumber || "-",
         color: style?.color || "",
         service: entry.service || "",
@@ -2072,7 +2245,7 @@ function dispatchReportRows(reportDate = "") {
       rows.push({
         styleNumber: style.styleNumber,
         color: style.color,
-        image: style.image || "",
+        image: styleImageSrc(style),
         size,
         cutQty,
         makeQty,
@@ -2349,49 +2522,108 @@ async function importPendingStylesCsv() {
   const file = pendingStyleImportFile;
   if (!file) return;
   try {
-    const rows = parseCsv(await file.text());
+    const rows = await parseStyleImportFile(file);
     if (styleImportNeedsLocalImages(rows) && !els.styleImageImportInput?.files?.length) {
-      alert("This style CSV uses image file names. Please select those image files in 'Select Style Images' and the import will continue.");
+      alert("This style import file uses image file names. Please select those image files in 'Select Style Images' and the import will continue.");
       return;
     }
     const importedImageMap = await buildImportedImageMap(els.styleImageImportInput?.files);
-    rows.forEach((row) => {
-      const styleNumber = clean(row.styleNumber);
-      if (!styleNumber) return;
-      const existing = state.styles.find((s) => s.styleNumber.toLowerCase() === styleNumber.toLowerCase());
-      const color = clean(row.color);
-      const variant = state.styles.find((s) => s.styleNumber.toLowerCase() === styleNumber.toLowerCase() && clean(s.color).toLowerCase() === color.toLowerCase());
-      const operations = extractOperations(row);
-      const resolvedImage = resolveImportedImage(row.image, importedImageMap);
-      const payload = {
-        id: variant?.id || uid(),
-        styleNumber,
-        buyerName: clean(row.buyerName),
-        styleName: clean(row.styleName),
-        color,
-        orderQty: num(row.orderQty),
-        cmtRate: num(row.cmtRate),
-        serviceChargePct: num(row.serviceChargePct),
-        image: resolvedImage || variant?.image || existing?.image || "",
-        notes: clean(row.notes),
-        operations
-      };
-      if (variant) {
-        Object.assign(variant, payload);
-      } else if (existing && !color) {
-        Object.assign(existing, payload);
-      } else {
-        state.styles.push(payload);
-      }
+    const summary = await importStyleRows(rows, importedImageMap, {
+      skipExisting: Boolean(els.skipExistingStylesToggle?.checked)
     });
     await persistState();
-    alert("Styles imported successfully.");
-  } catch {
-    alert("Could not import style CSV.");
+    alert(`Styles import finished.\nCreated: ${summary.created}\nUpdated: ${summary.updated}\nSkipped: ${summary.skipped}`);
+  } catch (error) {
+    console.error("Style import failed:", error);
+    alert(`Could not import the style file.${clean(error?.message) ? `\n${clean(error.message)}` : ""}`);
   }
   pendingStyleImportFile = null;
   els.styleImportInput.value = "";
   if (els.styleImageImportInput) els.styleImageImportInput.value = "";
+}
+
+async function importCmtUpdateSheet(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  try {
+    const rows = await parseWorkbookOrCsvRows(file);
+    const summary = await applyCmtUpdateRows(rows);
+    await persistState();
+    alert(`CMT update finished.\nUpdated: ${summary.updated}\nSkipped: ${summary.skipped}`);
+  } catch (error) {
+    console.error("CMT update import failed:", error);
+    alert(`Could not import the CMT update sheet.${clean(error?.message) ? `\n${clean(error.message)}` : ""}`);
+  }
+  if (els.cmtUpdateImportInput) els.cmtUpdateImportInput.value = "";
+}
+
+async function downloadPendingCmtSheet() {
+  const rows = pendingCmtStyles();
+  if (!rows.length) {
+    alert("No pending CMT styles found.");
+    return;
+  }
+  const workbook = createWorkbookOrAlert();
+  if (!workbook) return;
+  const sheet = workbook.addWorksheet("Pending CMT");
+  sheet.columns = [
+    { header: "styleNumber", key: "styleNumber", width: 20 },
+    { header: "styleName", key: "styleName", width: 28 },
+    { header: "color", key: "color", width: 18 },
+    { header: "buyerName", key: "buyerName", width: 18 },
+    { header: "cmtRate", key: "cmtRate", width: 14 },
+    { header: "serviceChargePct", key: "serviceChargePct", width: 16 },
+    { header: "singerRate", key: "singerRate", width: 14 },
+    { header: "overlockRate", key: "overlockRate", width: 16 },
+    { header: "flatRate", key: "flatRate", width: 12 },
+    { header: "pendingFields", key: "pendingFields", width: 24 }
+  ];
+  styleWorksheetHeader(sheet);
+  rows.forEach((style) => {
+    sheet.addRow({
+      styleNumber: style.styleNumber,
+      styleName: style.styleName || "",
+      color: style.color || "",
+      buyerName: style.buyerName || "",
+      cmtRate: num(style.cmtRate) || "",
+      serviceChargePct: num(style.serviceChargePct) || "",
+      singerRate: operationRateByName(style, "Singer") || "",
+      overlockRate: operationRateByName(style, "Overlock") || "",
+      flatRate: operationRateByName(style, "Flat") || "",
+      pendingFields: pendingCmtReason(style)
+    });
+  });
+  finalizeWorksheet(sheet);
+  await downloadWorkbook(`pending-cmt-styles-${todayIso()}.xlsx`, workbook);
+}
+
+async function applyCmtUpdateRows(rows) {
+  const summary = { updated: 0, skipped: 0 };
+  for (const row of rows) {
+    const styleNumber = clean(row.styleNumber);
+    if (!styleNumber) continue;
+    const color = clean(row.color);
+    const matchingStyles = state.styles.filter((style) =>
+      style.styleNumber.toLowerCase() === styleNumber.toLowerCase()
+      && (!color || clean(style.color).toLowerCase() === color.toLowerCase())
+    );
+    const style = matchingStyles.length === 1
+      ? matchingStyles[0]
+      : matchingStyles.find((item) => clean(item.color).toLowerCase() === color.toLowerCase());
+    if (!style) {
+      summary.skipped += 1;
+      continue;
+    }
+    if (clean(row.buyerName)) style.buyerName = clean(row.buyerName);
+    if (clean(row.styleName)) style.styleName = clean(row.styleName);
+    if (clean(row.cmtRate)) style.cmtRate = num(row.cmtRate);
+    if (clean(row.serviceChargePct)) style.serviceChargePct = num(row.serviceChargePct);
+    if (clean(row.singerRate)) upsertStyleOperation(style, "Singer", row.singerRate);
+    if (clean(row.overlockRate)) upsertStyleOperation(style, "Overlock", row.overlockRate);
+    if (clean(row.flatRate)) upsertStyleOperation(style, "Flat", row.flatRate);
+    summary.updated += 1;
+  }
+  return summary;
 }
 
 function styleImportNeedsLocalImages(rows) {
@@ -2524,6 +2756,269 @@ function extractOperations(row) {
   return operations;
 }
 
+async function parseStyleImportFile(file) {
+  const lowerName = clean(file?.name).toLowerCase();
+  if (lowerName.endsWith(".xlsx")) {
+    return parseStyleWorkbook(file);
+  }
+  return parseCsv(await file.text());
+}
+
+async function parseWorkbookOrCsvRows(file) {
+  const lowerName = clean(file?.name).toLowerCase();
+  if (lowerName.endsWith(".xlsx")) {
+    return parseWorkbookRows(file);
+  }
+  return parseCsv(await file.text());
+}
+
+async function parseStyleWorkbook(file) {
+  if (!window.ExcelJS?.Workbook) {
+    throw new Error("Excel import is not available.");
+  }
+  const workbook = new window.ExcelJS.Workbook();
+  await workbook.xlsx.load(await file.arrayBuffer());
+  const worksheet = workbook.worksheets.find((sheet) => sheet.actualRowCount > 0);
+  if (!worksheet) return [];
+  const imageByRow = extractWorkbookImagesByRow(workbook, worksheet);
+  const rows = worksheet.getSheetValues().slice(1).map((row) => Array.isArray(row) ? row.slice(1) : []);
+  const headerRowIndex = rows.findIndex((row) => detectStyleImportHeader(row));
+  if (headerRowIndex === -1) return [];
+  const headers = rows[headerRowIndex].map((cell) => clean(excelCellToText(cell)));
+  const dataRows = rows.slice(headerRowIndex + 1);
+  const normalizedHeaders = headers.map((header) => normalizeImportHeader(header));
+  if (normalizedHeaders.includes("vendorstylecode")) {
+    return parseVendorStyleWorkbookRows(headers, dataRows, headerRowIndex + 2, imageByRow);
+  }
+  return dataRows
+    .map((row) => Object.fromEntries(headers.map((header, index) => [header, excelCellToText(row[index])])))
+    .filter((row) => Object.values(row).some((value) => clean(value)));
+}
+
+async function parseWorkbookRows(file) {
+  if (!window.ExcelJS?.Workbook) {
+    throw new Error("Excel import is not available.");
+  }
+  const workbook = new window.ExcelJS.Workbook();
+  await workbook.xlsx.load(await file.arrayBuffer());
+  const worksheet = workbook.worksheets.find((sheet) => sheet.actualRowCount > 0);
+  if (!worksheet) return [];
+  const rows = worksheet.getSheetValues().slice(1).map((row) => Array.isArray(row) ? row.slice(1) : []);
+  const headerRow = rows.find((row) => row.some((cell) => clean(excelCellToText(cell))));
+  if (!headerRow) return [];
+  const headerIndex = rows.indexOf(headerRow);
+  const headers = headerRow.map((cell) => clean(excelCellToText(cell)));
+  return rows.slice(headerIndex + 1)
+    .map((row) => Object.fromEntries(headers.map((header, index) => [header, excelCellToText(row[index])])))
+    .filter((row) => Object.values(row).some((value) => clean(value)));
+}
+
+function parseVendorStyleWorkbookRows(headers, dataRows, startRowNumber = 2, imageByRow = new Map()) {
+  let lastImage = "";
+  let lastStyleNumber = "";
+  return dataRows.map((row, index) => {
+    const raw = Object.fromEntries(headers.map((header, index) => [header, excelCellToText(row[index])]));
+    const sheetRowNumber = startRowNumber + index;
+    const imageFromSheet = imageByRow.get(sheetRowNumber) || "";
+    const styleNumber = clean(raw["UVP Style ID"] || raw["Vendor Style Code"]);
+    if (styleNumber !== lastStyleNumber) lastImage = "";
+    if (imageFromSheet) lastImage = imageFromSheet;
+    lastStyleNumber = styleNumber;
+    const styleName = [clean(raw.Brick), clean(raw.Fabric)].filter(Boolean).join(" - ");
+    const notes = [
+      raw["Vendor Style Code"] ? `Vendor Style Code: ${clean(raw["Vendor Style Code"])}` : "",
+      raw["Content Fabric"] ? `Content Fabric: ${clean(raw["Content Fabric"])}` : "",
+      raw.Fabric ? `Fabric: ${clean(raw.Fabric)}` : "",
+      raw["HSN Code"] ? `HSN Code: ${clean(raw["HSN Code"])}` : ""
+    ].filter(Boolean).join(" | ");
+    return {
+      styleNumber,
+      buyerName: "",
+      styleName,
+      color: clean(raw["Vendor Color Name"]),
+      orderQty: excelCellToText(raw["Vendor Capacity"]),
+      cmtRate: "",
+      serviceChargePct: "",
+      image: imageFromSheet || lastImage,
+      notes
+    };
+  }).filter((row) => row.styleNumber && row.color);
+}
+
+async function importStyleRows(rows, importedImageMap = new Map(), options = {}) {
+  const summary = { created: 0, updated: 0, skipped: 0 };
+  for (const row of rows) {
+    const styleNumber = clean(row.styleNumber);
+    if (!styleNumber) continue;
+    const existing = state.styles.find((s) => s.styleNumber.toLowerCase() === styleNumber.toLowerCase());
+    const color = clean(row.color);
+    const variant = state.styles.find((s) => s.styleNumber.toLowerCase() === styleNumber.toLowerCase() && clean(s.color).toLowerCase() === color.toLowerCase());
+    if (options.skipExisting && variant) {
+      summary.skipped += 1;
+      continue;
+    }
+    const operations = extractOperations(row);
+    const resolvedImage = resolveImportedImage(row.image, importedImageMap);
+    const styleId = variant?.id || uid();
+    const payload = {
+      id: styleId,
+      styleNumber,
+      buyerName: clean(row.buyerName),
+      styleName: clean(row.styleName),
+      color,
+      orderQty: num(row.orderQty),
+      cmtRate: num(row.cmtRate),
+      serviceChargePct: num(row.serviceChargePct),
+      image: await prepareStyleImageForState(resolvedImage || styleImageSrc(variant) || styleImageSrc(existing) || existing?.image || "", styleId),
+      notes: clean(row.notes),
+      operations
+    };
+    if (variant) {
+      Object.assign(variant, payload);
+      summary.updated += 1;
+    } else if (existing && !color) {
+      Object.assign(existing, payload);
+      summary.updated += 1;
+    } else {
+      state.styles.push(payload);
+      summary.created += 1;
+    }
+  }
+  return summary;
+}
+
+function detectStyleImportHeader(row = []) {
+  const headers = row.map((cell) => normalizeImportHeader(excelCellToText(cell))).filter(Boolean);
+  return headers.includes("stylenumber") || headers.includes("vendorstylecode");
+}
+
+function normalizeImportHeader(value) {
+  return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function operationRateByName(style, operationName) {
+  const target = normalizeOperationName(operationName);
+  return num(style?.operations?.find((operation) => normalizeOperationName(operation.operationName) === target)?.rate);
+}
+
+function normalizeOperationName(value) {
+  return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function upsertStyleOperation(style, operationName, rate) {
+  const normalized = normalizeOperationName(operationName);
+  const index = style.operations.findIndex((operation) => normalizeOperationName(operation.operationName) === normalized);
+  if (index >= 0) {
+    style.operations[index].operationName = operationName;
+    style.operations[index].rate = num(rate);
+  } else {
+    style.operations.push({ operationName, rate: num(rate) });
+  }
+}
+
+function pendingCmtStyles() {
+  return state.styles.filter((style) => {
+    const hasBuyer = Boolean(clean(style.buyerName));
+    const hasCmt = num(style.cmtRate) > 0;
+    const hasSinger = operationRateByName(style, "Singer") > 0;
+    const hasOverlock = operationRateByName(style, "Overlock") > 0;
+    const hasFlat = operationRateByName(style, "Flat") > 0;
+    return !hasBuyer || !hasCmt || !hasSinger || !hasOverlock || !hasFlat;
+  });
+}
+
+function pendingCmtReason(style) {
+  const reasons = [];
+  if (!clean(style.buyerName)) reasons.push("Buyer");
+  if (num(style.cmtRate) <= 0) reasons.push("Total CMT");
+  if (operationRateByName(style, "Singer") <= 0) reasons.push("Singer");
+  if (operationRateByName(style, "Overlock") <= 0) reasons.push("Overlock");
+  if (operationRateByName(style, "Flat") <= 0) reasons.push("Flat");
+  return reasons.join(", ");
+}
+
+function excelCellToText(value) {
+  if (value == null) return "";
+  if (typeof value === "object") {
+    if ("text" in value && clean(value.text)) return value.text;
+    if ("result" in value && value.result != null) return excelCellToText(value.result);
+    if ("richText" in value && Array.isArray(value.richText)) return value.richText.map((part) => part.text || "").join("");
+    if ("hyperlink" in value && value.hyperlink) return String(value.hyperlink);
+    if ("formula" in value && value.formula) return String(value.formula);
+  }
+  return String(value).trim();
+}
+
+function extractWorkbookImagesByRow(workbook, worksheet) {
+  const map = new Map();
+  const images = typeof worksheet.getImages === "function" ? worksheet.getImages() : [];
+  images.forEach((image) => {
+    try {
+      const rowNumber = imageAnchorRowNumber(image);
+      const dataUrl = workbookImageToDataUrl(workbook, image.imageId);
+      if (rowNumber && dataUrl) map.set(rowNumber, dataUrl);
+    } catch (error) {
+      console.warn("Skipping workbook image during style import:", error);
+    }
+  });
+  return map;
+}
+
+function imageAnchorRowNumber(image) {
+  const nativeRow = image?.range?.tl?.nativeRow;
+  if (typeof nativeRow === "number") return nativeRow + 1;
+  const directRow = image?.range?.tl?.row;
+  if (typeof directRow === "number") return directRow + 1;
+  const alternate = image?.range?.br?.nativeRow;
+  if (typeof alternate === "number") return alternate + 1;
+  return 0;
+}
+
+function workbookImageToDataUrl(workbook, imageId) {
+  const media = (workbook.model?.media || []).find((item) => item.index === imageId || item.id === imageId);
+  if (!media) return "";
+  const extension = clean(media.extension || "png").toLowerCase() || "png";
+  if (clean(media.base64)) {
+    return media.base64.startsWith("data:image/")
+      ? media.base64
+      : `data:image/${extension};base64,${media.base64}`;
+  }
+  const binary = normalizeBinaryData(media.buffer || media.data);
+  if (binary) {
+    return `data:image/${extension};base64,${bytesToBase64(binary)}`;
+  }
+  return "";
+}
+
+function bytesToBase64(bufferLike) {
+  const bytes = bufferLike instanceof Uint8Array ? bufferLike : new Uint8Array(bufferLike);
+  let binary = "";
+  const chunkSize = 32768;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+function normalizeBinaryData(value) {
+  if (!value) return null;
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (Array.isArray(value)) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (typeof value === "object" && Array.isArray(value.data)) return new Uint8Array(value.data);
+  if (typeof value === "string") {
+    const text = value.startsWith("data:") ? value.split(",", 2)[1] || "" : value;
+    if (!text) return null;
+    const binary = atob(text);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+  return null;
+}
+
 function sizeQuantitiesFromRow(row) {
   return Object.fromEntries(getSizes().map((size) => [size, num(row[size])]));
 }
@@ -2553,13 +3048,14 @@ function editStyle(styleId) {
   els.styleForm.styleName.value = style.styleName || "";
   els.styleForm.cmtRate.value = style.cmtRate || "";
   els.styleForm.serviceChargePct.value = style.serviceChargePct || "";
-  els.styleForm.image.value = style.image && !style.image.startsWith("data:") ? style.image : "";
+  const imageSource = styleImageSrc(style);
+  els.styleForm.image.value = imageSource && !imageSource.startsWith("data:") ? imageSource : "";
   els.styleForm.querySelector('[name="imageFile"]').value = "";
   els.styleForm.notes.value = style.notes || "";
   resetStyleVariantRows([{ color: style.color || "", orderQty: style.orderQty || "" }]);
   els.operationRateRows.innerHTML = "";
   (style.operations.length ? style.operations : [{ operationName: "", rate: "" }]).forEach((op) => addOperationRow(op.operationName, op.rate));
-  updateStyleFormImagePreview(style.image || "");
+  updateStyleFormImagePreview(imageSource || "");
   els.styleForm.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -2573,6 +3069,7 @@ async function deleteStyle(styleId) {
   const confirmed = window.confirm(`Delete style ${style.styleNumber}?`);
   if (!confirmed) return;
   state.styles = state.styles.filter((s) => s.id !== styleId);
+  await deleteStoredStyleImage(styleId);
   if (els.styleForm.dataset.editId === styleId) {
     delete els.styleForm.dataset.editId;
     resetStyleFormState();
@@ -2663,6 +3160,561 @@ function handleWashcareStyleChange() {
   populateWashcareFormByStyle(styleId);
 }
 
+async function importGrnPdf(e) {
+  const files = [...(e.target.files || [])];
+  if (!files.length) return;
+  let importedCount = 0;
+  const failures = [];
+  for (const file of files) {
+    if (els.grnStatusText) {
+      els.grnStatusText.textContent = `Reading GRN PDF: ${file.name}`;
+    }
+    try {
+      const extracted = await extractGrnReportDetails(file);
+      const report = {
+        ...clone(DEFAULTS.grnStatus),
+        ...extracted,
+        id: uid(),
+        grnFileName: file.name,
+        updatedAt: new Date().toISOString()
+      };
+      state.grnStatus = report;
+      upsertGrnReport(report);
+      importedCount += 1;
+    } catch (error) {
+      console.error(error);
+      failures.push(file.name);
+    }
+  }
+  await persistState();
+  if (els.grnStatusText) {
+    if (importedCount && !failures.length) {
+      els.grnStatusText.textContent = importedCount === 1
+        ? `Loaded and saved 1 GRN report.`
+        : `Loaded and saved ${importedCount} GRN reports.`;
+    } else if (importedCount && failures.length) {
+      els.grnStatusText.textContent = `Saved ${importedCount} GRN reports. Failed to read: ${failures.join(", ")}.`;
+    } else {
+      els.grnStatusText.textContent = "Could not read the selected GRN PDF files automatically. Please try the launcher file and upload again.";
+    }
+  }
+  if (!importedCount) {
+    alert("Could not read the selected GRN PDF files.");
+  }
+  if (els.grnPdfInput) els.grnPdfInput.value = "";
+}
+
+async function saveCurrentGrnReport() {
+  if (!state.grnStatus?.grnFileName || !(state.grnStatus.items || []).length) {
+    alert("Please upload a GRN PDF first.");
+    return;
+  }
+  const report = {
+    ...clone(DEFAULTS.grnStatus),
+    ...state.grnStatus,
+    id: clean(state.grnStatus.id) || uid(),
+    updatedAt: new Date().toISOString()
+  };
+  state.grnStatus = report;
+  upsertGrnReport(report);
+  await persistState();
+  if (els.grnStatusText) {
+    els.grnStatusText.textContent = `GRN ${report.grnNumber || "-"} saved successfully.`;
+  }
+}
+
+function upsertGrnReport(report) {
+  const reportKey = normalizeKey(report.grnNumber) || normalizeKey(report.vendorInvoiceNo) || clean(report.id);
+  const index = (state.grnReports || []).findIndex((item) => {
+    const itemKey = normalizeKey(item.grnNumber) || normalizeKey(item.vendorInvoiceNo) || clean(item.id);
+    return itemKey && itemKey === reportKey;
+  });
+  if (index >= 0) state.grnReports[index] = report;
+  else state.grnReports.push(report);
+}
+
+async function importPackingListPdf(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  if (!state.grnStatus?.grnFileName) {
+    alert("Please upload the GRN PDF first.");
+    if (els.grnPackingListInput) els.grnPackingListInput.value = "";
+    return;
+  }
+  if (els.grnStatusText) {
+    els.grnStatusText.textContent = `Reading packing list file: ${file.name}`;
+  }
+  try {
+    const extracted = /\.xlsx$/i.test(file.name)
+      ? await extractPackingListWorkbookDetails(file)
+      : await extractPackingListDetails(file);
+    const comparisonRows = buildGrnComparisonRows(state.grnStatus.items, extracted.items);
+    state.grnStatus = {
+      ...state.grnStatus,
+      packingListFileName: file.name,
+      packingItems: extracted.items,
+      packingListInvoiceNo: extracted.invoiceNo,
+      packingListRawText: extracted.rawText,
+      comparisonRows,
+      updatedAt: new Date().toISOString()
+    };
+    await persistState();
+  } catch (error) {
+    console.error(error);
+    if (els.grnStatusText) {
+      els.grnStatusText.textContent = "Could not read the packing list file automatically. We can refine this once you share one sample packing list.";
+    }
+    alert("Could not read the selected packing list file.");
+  } finally {
+    if (els.grnPackingListInput) els.grnPackingListInput.value = "";
+  }
+}
+
+async function extractPdfPlainText(file) {
+  if (/^https?:\/\/(127\.0\.0\.1|localhost):3100/i.test(clean(window.location?.origin))) {
+    try {
+      return await extractPdfPlainTextViaServer(file);
+    } catch (error) {
+      console.error("Server-side PDF extraction failed, falling back to browser parser.", error);
+    }
+  }
+  if (!window.pdfjsLib?.getDocument) {
+    throw new Error("PDF library not loaded.");
+  }
+  const arrayBuffer = await file.arrayBuffer();
+  const loadingTask = window.pdfjsLib.getDocument({
+    data: arrayBuffer,
+    disableWorker: true,
+    isEvalSupported: false,
+    useWorkerFetch: false
+  });
+  const pdf = await loadingTask.promise;
+  const pages = [];
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const content = await page.getTextContent();
+    pages.push(content.items.map((item) => item.str).join(" "));
+  }
+  const fullText = pages.join("\n");
+  return {
+    fullText,
+    normalized: fullText.replace(/\s+/g, " ").trim()
+  };
+}
+
+async function extractPdfPlainTextViaServer(file) {
+  const response = await fetch("/extract-pdf-text", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/pdf"
+    },
+    body: file
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data) {
+    throw new Error(data?.details || data?.error || `Server extraction failed with HTTP ${response.status}.`);
+  }
+  const normalized = clean(data.text);
+  return {
+    fullText: normalized,
+    normalized
+  };
+}
+
+async function extractGrnReportDetails(file) {
+  const { fullText, normalized } = await extractPdfPlainText(file);
+  const items = parseGrnItems(normalized);
+  return {
+    grnNumber: extractReportField(normalized, /Goods Receipt Note No\.\s*:?\s*([A-Za-z0-9/-]+)/i),
+    grnDate: normalizeDateValue(extractReportField(normalized, /Goods Receipt Note No\.\s*:?\s*[A-Za-z0-9/-]+\s+Date:?\s*([0-9./-]+)/i)),
+    supplier: extractReportField(normalized, /Supplier\s*:?\s*(.+?)\s+E-\d+/i) || extractReportField(normalized, /NEXTGEN FAST FASHION LIMITED\s+Supplier\s*:?\s*(.+?)\s+Code/i),
+    supplierCode: extractReportField(normalized, /Code\s*:?\s*([A-Za-z0-9/-]+)/i),
+    supplierGstin: extractReportField(normalized, /GSTIN NO\s*:?\s*([A-Z0-9]+)/i),
+    vendorInvoiceNo: extractReportField(normalized, /Vendor invoice no\s*:?\s*([A-Za-z0-9/-]+)/i),
+    poNumber: extractReportField(normalized, /PO Number\s*:?\s*([A-Za-z0-9/-]+)/i),
+    poDate: normalizeDateValue(extractReportField(normalized, /PO Number\s*:?\s*[A-Za-z0-9/-]+\s+Date\s*:?\s*([0-9./-]+)/i)),
+    deliveryNo: extractReportField(normalized, /Delivery No\s*:?\s*([A-Za-z0-9/-]+)/i),
+    consignee: extractReportField(normalized, /Consignee\s*:?\s*(.+?)\s+GSTIN NO/i),
+    warehouse: extractReportField(normalized, /Delivery Addr:\s*(.+?)\s+GSTIN NO/i) || extractReportField(normalized, /Consignee\s*:?\s*(.+?)\s+NEXTGEN FAST FASHION/i),
+    transporterName: extractReportField(normalized, /Transporter Details:\s*Name\s*:?\s*(.+?)\s+Consignment Note/i),
+    consignmentNote: extractReportField(normalized, /Consignment Note\s*:?\s*([A-Za-z0-9/-]+)/i),
+    consignmentDate: normalizeDateValue(extractReportField(normalized, /C\/N Date\s*:?\s*([0-9./-]+)/i)),
+    vehicleNumber: extractReportField(normalized, /Truck\/ Lorry\/ Carrier No:\s*([A-Za-z0-9-]+)/i),
+    deliveryChallanNo: extractReportField(normalized, /Delivery Challan No:\s*([A-Za-z0-9/-]+)/i),
+    totalChallanQty: items.reduce((sum, item) => sum + num(item.challanQty), 0),
+    totalReceivedQty: items.reduce((sum, item) => sum + num(item.receivedQty), 0),
+    totalAcceptedQty: items.reduce((sum, item) => sum + num(item.acceptedQty), 0),
+    totalShortQty: items.reduce((sum, item) => sum + num(item.shortQty), 0),
+    items,
+    comparisonRows: [],
+    packingItems: [],
+    packingListFileName: "",
+    packingListInvoiceNo: "",
+    packingListRawText: fullText
+  };
+}
+
+function parseGrnItems(text) {
+  const tableText = extractReportField(text, /S No\s+Article(.+?)Total Qty UOM wise/i) || text;
+  const pattern = /(\d+)\s+(\d{12,})\s+(.+?)\s+(\d{13})\s+([A-Za-z0-9/-]+)\s+(EA|PCS|PC|NOS)\s+(\d+)\s+(\d+)\s+(\d+)(?:\s+(\d+)\s+(Short\s+Recvd\.?))?/gi;
+  const items = [];
+  let match;
+  while ((match = pattern.exec(tableText))) {
+    const [, serialNo, article, description, ean, vendorArticleNo, uom, challanQty, receivedQty, acceptedQty, shortQty, reason] = match;
+    items.push({
+      serialNo: num(serialNo),
+      article: clean(article),
+      description: clean(description.replace(/\s+/g, " ")),
+      ean: clean(ean),
+      vendorArticleNo: clean(vendorArticleNo),
+      uom: clean(uom) || "EA",
+      challanQty: num(challanQty),
+      receivedQty: num(receivedQty),
+      acceptedQty: num(acceptedQty),
+      shortQty: num(shortQty) || Math.max(num(challanQty) - num(acceptedQty), 0),
+      reason: clean(reason) || (num(challanQty) > num(acceptedQty) ? "Short Recvd." : "")
+    });
+  }
+  return items;
+}
+
+async function extractPackingListDetails(file) {
+  const { fullText, normalized } = await extractPdfPlainText(file);
+  return {
+    invoiceNo: extractReportField(normalized, /(?:invoice|inv\.?)\s*(?:no|number)\s*:?\s*([A-Za-z0-9/-]+)/i) || extractReportField(normalized, /delivery challan no\s*:?\s*([A-Za-z0-9/-]+)/i),
+    items: parsePackingListItems(normalized),
+    rawText: fullText
+  };
+}
+
+async function extractPackingListWorkbookDetails(file) {
+  if (!window.ExcelJS?.Workbook) {
+    throw new Error("Excel library not loaded.");
+  }
+  const workbook = new window.ExcelJS.Workbook();
+  const buffer = await file.arrayBuffer();
+  await workbook.xlsx.load(buffer);
+  const sheet = workbook.worksheets[0];
+  if (!sheet) {
+    throw new Error("Packing list workbook is empty.");
+  }
+
+  let invoiceNo = "";
+  let invoiceDate = "";
+  let asnNo = "";
+  let poNumber = "";
+  let headerRowNumber = 0;
+
+  for (let rowNumber = 1; rowNumber <= Math.min(sheet.rowCount, 20); rowNumber += 1) {
+    const values = getWorksheetRowValues(sheet.getRow(rowNumber));
+    const joined = values.join(" | ");
+    if (!invoiceNo && /invoice\s*no/i.test(joined)) invoiceNo = valueAfterLabel(values, /invoice\s*no/i);
+    if (!invoiceDate && /invoice\s*date/i.test(joined)) invoiceDate = valueAfterLabel(values, /invoice\s*date/i);
+    if (!asnNo && /asn\s*no/i.test(joined)) asnNo = valueAfterLabel(values, /asn\s*no/i);
+    if (!poNumber && /po\s*no/i.test(joined)) poNumber = valueAfterLabel(values, /po\s*no/i);
+    if (!headerRowNumber && values.some((value) => /rr\s*sku\s*code/i.test(value)) && values.some((value) => /\bqty\b/i.test(value))) {
+      headerRowNumber = rowNumber;
+    }
+  }
+
+  if (!headerRowNumber) {
+    throw new Error("Could not find the packing list item table.");
+  }
+
+  const headerValues = getWorksheetRowValues(sheet.getRow(headerRowNumber)).map((value) => normalizeKey(value));
+  const itemCol = findHeaderIndex(headerValues, ["item"]);
+  const skuCol = findHeaderIndex(headerValues, ["skucode"]);
+  const rrSkuCol = findHeaderIndex(headerValues, ["rrskucode"]);
+  const qtyCol = findHeaderIndex(headerValues, ["qty"]);
+
+  const items = [];
+  for (let rowNumber = headerRowNumber + 1; rowNumber <= sheet.rowCount; rowNumber += 1) {
+    const row = sheet.getRow(rowNumber);
+    const values = getWorksheetRowValues(row);
+    const description = values[itemCol] || "";
+    const article = values[rrSkuCol] || "";
+    const vendorArticleNo = values[skuCol] || "";
+    const qty = num(values[qtyCol] || 0);
+    if (!clean(description) && !clean(article) && !clean(vendorArticleNo) && !qty) continue;
+    items.push({
+      article: clean(article),
+      description: clean(description),
+      ean: "",
+      vendorArticleNo: clean(vendorArticleNo),
+      uom: "EA",
+      qty
+    });
+  }
+
+  return {
+    invoiceNo: clean(invoiceNo),
+    invoiceDate: normalizeDateValue(invoiceDate),
+    asnNo: clean(asnNo),
+    poNumber: clean(poNumber),
+    items: dedupePackingItems(items),
+    rawText: `${sheet.name} workbook import`
+  };
+}
+
+function getWorksheetRowValues(row) {
+  return Array.from({ length: row.cellCount }, (_, index) => clean(cellText(row.getCell(index + 1).value)));
+}
+
+function cellText(value) {
+  if (value == null) return "";
+  if (typeof value === "object") {
+    if (typeof value.text === "string") return value.text;
+    if (typeof value.result !== "undefined") return String(value.result ?? "");
+    if (typeof value.richText !== "undefined") return value.richText.map((part) => part.text || "").join("");
+  }
+  return String(value);
+}
+
+function valueAfterLabel(values, labelPattern) {
+  const index = values.findIndex((value) => labelPattern.test(value));
+  if (index < 0) return "";
+  return clean(values[index + 1] || values[index + 2] || "");
+}
+
+function findHeaderIndex(headers, aliases) {
+  const index = headers.findIndex((value) => aliases.includes(value));
+  return index >= 0 ? index : 0;
+}
+
+function parsePackingListItems(text) {
+  const results = [];
+  const articlePattern = /(\d{12,})\s+(.+?)\s+(\d{13})\s+([A-Za-z0-9/-]+)\s+(EA|PCS|PC|NOS)\s+(\d+)(?!\s+\d)/gi;
+  let match;
+  while ((match = articlePattern.exec(text))) {
+    const [, article, description, ean, vendorArticleNo, uom, qty] = match;
+    results.push({
+      article: clean(article),
+      description: clean(description.replace(/\s+/g, " ")),
+      ean: clean(ean),
+      vendorArticleNo: clean(vendorArticleNo),
+      uom: clean(uom),
+      qty: num(qty)
+    });
+  }
+  if (results.length) return dedupePackingItems(results);
+
+  const sizePattern = /([A-Za-z0-9 .,&/-]+?,\s*[A-Za-z]{1,4})\s+(\d+)(?!\s+\d)/gi;
+  while ((match = sizePattern.exec(text))) {
+    const [, description, qty] = match;
+    results.push({
+      article: "",
+      description: clean(description.replace(/\s+/g, " ")),
+      ean: "",
+      vendorArticleNo: "",
+      uom: "EA",
+      qty: num(qty)
+    });
+  }
+  return dedupePackingItems(results);
+}
+
+function dedupePackingItems(items = []) {
+  const map = new Map();
+  items.forEach((item) => {
+    const key = buildItemMatchKey(item);
+    if (!key) return;
+    const current = map.get(key) || { ...item, qty: 0 };
+    current.qty += num(item.qty);
+    map.set(key, current);
+  });
+  return [...map.values()];
+}
+
+function buildGrnComparisonRows(grnItems = [], packingItems = []) {
+  const grnMap = new Map();
+  grnItems.forEach((item) => {
+    const key = buildItemMatchKey(item);
+    if (!key) return;
+    const current = grnMap.get(key) || { ...item, challanQty: 0, acceptedQty: 0 };
+    current.challanQty += num(item.challanQty);
+    current.acceptedQty += num(item.acceptedQty);
+    current.description = current.description || item.description;
+    grnMap.set(key, current);
+  });
+  return packingItems.map((item) => {
+    const key = buildItemMatchKey(item);
+    const matched = grnMap.get(key) || {};
+    const packingQty = num(item.qty);
+    const acceptedQty = num(matched.acceptedQty);
+    return {
+      matchKey: key,
+      matchLabel: item.description || item.vendorArticleNo || item.article || item.ean || key,
+      packingQty,
+      challanQty: num(matched.challanQty),
+      acceptedQty,
+      shortageQty: Math.max(packingQty - acceptedQty, 0)
+    };
+  });
+}
+
+function buildItemMatchKey(item = {}) {
+  return normalizeKey(item.article) || normalizeKey(item.ean) || normalizeKey(item.vendorArticleNo) || normalizeKey(item.description);
+}
+
+async function downloadGrnSheetWorkbook() {
+  const grn = state.grnStatus || {};
+  if (!(grn.items || []).length) {
+    alert("No GRN detail sheet available to export yet.");
+    return;
+  }
+  const workbook = createWorkbookOrAlert();
+  if (!workbook) return;
+  const sheet = workbook.addWorksheet("GRN Detail Sheet");
+  sheet.columns = [
+    { header: "GRN No", key: "grnNumber", width: 16 },
+    { header: "GRN Date", key: "grnDate", width: 14 },
+    { header: "Invoice No", key: "vendorInvoiceNo", width: 18 },
+    { header: "PO No", key: "poNumber", width: 16 },
+    { header: "Article", key: "article", width: 16 },
+    { header: "Description", key: "description", width: 38 },
+    { header: "EAN", key: "ean", width: 18 },
+    { header: "Vendor Article", key: "vendorArticleNo", width: 18 },
+    { header: "UOM", key: "uom", width: 8 },
+    { header: "Challan Qty", key: "challanQty", width: 12 },
+    { header: "Received Qty", key: "receivedQty", width: 12 },
+    { header: "Accepted Qty", key: "acceptedQty", width: 12 },
+    { header: "Short Qty", key: "shortQty", width: 10 },
+    { header: "Reason", key: "reason", width: 16 }
+  ];
+  styleWorksheetHeader(sheet);
+  grn.items.forEach((item) => {
+    sheet.addRow({
+      grnNumber: grn.grnNumber,
+      grnDate: grn.grnDate,
+      vendorInvoiceNo: grn.vendorInvoiceNo,
+      poNumber: grn.poNumber,
+      article: item.article,
+      description: item.description,
+      ean: item.ean,
+      vendorArticleNo: item.vendorArticleNo,
+      uom: item.uom,
+      challanQty: item.challanQty,
+      receivedQty: item.receivedQty,
+      acceptedQty: item.acceptedQty,
+      shortQty: item.shortQty,
+      reason: item.reason
+    });
+  });
+  if ((grn.comparisonRows || []).length) {
+    const compare = workbook.addWorksheet("Shortage Compare");
+    compare.columns = [
+      { header: "Match Key", key: "matchLabel", width: 36 },
+      { header: "Packing Qty", key: "packingQty", width: 14 },
+      { header: "GRN Challan Qty", key: "challanQty", width: 14 },
+      { header: "GRN Accepted Qty", key: "acceptedQty", width: 14 },
+      { header: "Shortage Qty", key: "shortageQty", width: 12 }
+    ];
+    styleWorksheetHeader(compare);
+    grn.comparisonRows.forEach((row) => compare.addRow(row));
+  }
+  await downloadWorkbook(`grn-detail-sheet-${clean(grn.grnNumber) || todayIso()}.xlsx`, workbook);
+}
+
+async function downloadAllGrnWorkbook() {
+  const reports = (state.grnReports || []).length
+    ? state.grnReports
+    : ((state.grnStatus?.items || []).length ? [state.grnStatus] : []);
+  if (!reports.length) {
+    alert("No saved GRN reports available to export.");
+    return;
+  }
+  const workbook = createWorkbookOrAlert();
+  if (!workbook) return;
+
+  const summary = workbook.addWorksheet("GRN Summary");
+  summary.columns = [
+    { header: "GRN No", key: "grnNumber", width: 16 },
+    { header: "GRN Date", key: "grnDate", width: 14 },
+    { header: "Invoice No", key: "vendorInvoiceNo", width: 18 },
+    { header: "PO No", key: "poNumber", width: 16 },
+    { header: "Supplier", key: "supplier", width: 28 },
+    { header: "Challan Qty", key: "totalChallanQty", width: 12 },
+    { header: "Received Qty", key: "totalReceivedQty", width: 12 },
+    { header: "Accepted Qty", key: "totalAcceptedQty", width: 12 },
+    { header: "Short Qty", key: "totalShortQty", width: 10 },
+    { header: "Packing List", key: "packingListFileName", width: 24 },
+    { header: "Updated", key: "updatedAt", width: 22 }
+  ];
+  styleWorksheetHeader(summary);
+  reports.forEach((report) => summary.addRow({
+    grnNumber: report.grnNumber,
+    grnDate: report.grnDate,
+    vendorInvoiceNo: report.vendorInvoiceNo,
+    poNumber: report.poNumber,
+    supplier: report.supplier,
+    totalChallanQty: report.totalChallanQty,
+    totalReceivedQty: report.totalReceivedQty,
+    totalAcceptedQty: report.totalAcceptedQty,
+    totalShortQty: report.totalShortQty,
+    packingListFileName: report.packingListFileName,
+    updatedAt: formatDateTimeDisplay(report.updatedAt)
+  }));
+
+  const detail = workbook.addWorksheet("GRN Details");
+  detail.columns = [
+    { header: "GRN No", key: "grnNumber", width: 16 },
+    { header: "Invoice No", key: "vendorInvoiceNo", width: 18 },
+    { header: "Article", key: "article", width: 16 },
+    { header: "Description", key: "description", width: 38 },
+    { header: "EAN", key: "ean", width: 18 },
+    { header: "Vendor Article", key: "vendorArticleNo", width: 18 },
+    { header: "UOM", key: "uom", width: 8 },
+    { header: "Challan Qty", key: "challanQty", width: 12 },
+    { header: "Received Qty", key: "receivedQty", width: 12 },
+    { header: "Accepted Qty", key: "acceptedQty", width: 12 },
+    { header: "Short Qty", key: "shortQty", width: 10 },
+    { header: "Reason", key: "reason", width: 16 }
+  ];
+  styleWorksheetHeader(detail);
+  reports.forEach((report) => {
+    (report.items || []).forEach((item) => detail.addRow({
+      grnNumber: report.grnNumber,
+      vendorInvoiceNo: report.vendorInvoiceNo,
+      article: item.article,
+      description: item.description,
+      ean: item.ean,
+      vendorArticleNo: item.vendorArticleNo,
+      uom: item.uom,
+      challanQty: item.challanQty,
+      receivedQty: item.receivedQty,
+      acceptedQty: item.acceptedQty,
+      shortQty: item.shortQty,
+      reason: item.reason
+    }));
+  });
+
+  const compareRows = reports.flatMap((report) => (report.comparisonRows || []).map((row) => ({
+    grnNumber: report.grnNumber,
+    invoiceNo: report.vendorInvoiceNo,
+    matchLabel: row.matchLabel,
+    packingQty: row.packingQty,
+    challanQty: row.challanQty,
+    acceptedQty: row.acceptedQty,
+    shortageQty: row.shortageQty
+  })));
+  if (compareRows.length) {
+    const compare = workbook.addWorksheet("Shortage Compare");
+    compare.columns = [
+      { header: "GRN No", key: "grnNumber", width: 16 },
+      { header: "Invoice No", key: "invoiceNo", width: 18 },
+      { header: "Match Key", key: "matchLabel", width: 36 },
+      { header: "Packing Qty", key: "packingQty", width: 14 },
+      { header: "GRN Challan Qty", key: "challanQty", width: 14 },
+      { header: "GRN Accepted Qty", key: "acceptedQty", width: 14 },
+      { header: "Shortage Qty", key: "shortageQty", width: 12 }
+    ];
+    styleWorksheetHeader(compare);
+    compareRows.forEach((row) => compare.addRow(row));
+  }
+
+  await downloadWorkbook(`all-grn-reports-${todayIso()}.xlsx`, workbook);
+}
+
 async function seedWashcareFromReportFile(e) {
   const file = e.target.files?.[0];
   if (!file || !els.washcareForm) return;
@@ -2706,25 +3758,7 @@ async function extractWashcareReportDetails(file) {
       console.error("Server-side PDF extraction failed, falling back to browser parser.", error);
     }
   }
-  if (!window.pdfjsLib?.getDocument) {
-    throw new Error("PDF library not loaded.");
-  }
-  const arrayBuffer = await file.arrayBuffer();
-  const loadingTask = window.pdfjsLib.getDocument({
-    data: arrayBuffer,
-    disableWorker: true,
-    isEvalSupported: false,
-    useWorkerFetch: false
-  });
-  const pdf = await loadingTask.promise;
-  const texts = [];
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    const content = await page.getTextContent();
-    texts.push(content.items.map((item) => item.str).join(" "));
-  }
-  const fullText = texts.join("\n");
-  const normalized = fullText.replace(/\s+/g, " ").trim();
+  const { normalized } = await extractPdfPlainText(file);
   const submittedWashcare = extractReportField(normalized, /Submitted Wash Care\s*:?\s*(.+?)\s*Test Name/i);
   const composition = extractReportField(normalized, /Fiber Content\s*:?\s*(.+?)\s*Fabric Code/i);
   const reportNumber = extractReportField(normalized, /\b(RRLD\d{8,})\b/i);
@@ -3277,6 +4311,66 @@ function normalizeState() {
   state.dispatchEntries = (Array.isArray(state.dispatchEntries) ? state.dispatchEntries : []).map((entry) => ({
     ...entry,
     date: normalizeDateValue(entry.date)
+  }));
+  state.grnStatus = { ...clone(DEFAULTS.grnStatus), ...(state.grnStatus || {}) };
+  state.grnReports = (Array.isArray(state.grnReports) ? state.grnReports : []).map((report) => ({
+    ...clone(DEFAULTS.grnStatus),
+    ...report
+  }));
+  state.grnStatus.grnDate = normalizeDateValue(state.grnStatus.grnDate);
+  state.grnStatus.poDate = normalizeDateValue(state.grnStatus.poDate);
+  state.grnStatus.consignmentDate = normalizeDateValue(state.grnStatus.consignmentDate);
+  state.grnStatus.items = Array.isArray(state.grnStatus.items) ? state.grnStatus.items.map((item) => ({
+    ...item,
+    serialNo: num(item.serialNo),
+    challanQty: num(item.challanQty),
+    receivedQty: num(item.receivedQty),
+    acceptedQty: num(item.acceptedQty),
+    shortQty: num(item.shortQty)
+  })) : [];
+  state.grnStatus.packingItems = Array.isArray(state.grnStatus.packingItems) ? state.grnStatus.packingItems.map((item) => ({
+    ...item,
+    qty: num(item.qty)
+  })) : [];
+  state.grnStatus.comparisonRows = Array.isArray(state.grnStatus.comparisonRows) ? state.grnStatus.comparisonRows.map((row) => ({
+    ...row,
+    packingQty: num(row.packingQty),
+    challanQty: num(row.challanQty),
+    acceptedQty: num(row.acceptedQty),
+    shortageQty: num(row.shortageQty)
+  })) : [];
+  state.grnStatus.totalChallanQty = num(state.grnStatus.totalChallanQty || state.grnStatus.items.reduce((sum, item) => sum + num(item.challanQty), 0));
+  state.grnStatus.totalReceivedQty = num(state.grnStatus.totalReceivedQty || state.grnStatus.items.reduce((sum, item) => sum + num(item.receivedQty), 0));
+  state.grnStatus.totalAcceptedQty = num(state.grnStatus.totalAcceptedQty || state.grnStatus.items.reduce((sum, item) => sum + num(item.acceptedQty), 0));
+  state.grnStatus.totalShortQty = num(state.grnStatus.totalShortQty || state.grnStatus.items.reduce((sum, item) => sum + num(item.shortQty), 0));
+  state.grnReports = state.grnReports.map((report) => ({
+    ...report,
+    grnDate: normalizeDateValue(report.grnDate),
+    poDate: normalizeDateValue(report.poDate),
+    consignmentDate: normalizeDateValue(report.consignmentDate),
+    items: Array.isArray(report.items) ? report.items.map((item) => ({
+      ...item,
+      serialNo: num(item.serialNo),
+      challanQty: num(item.challanQty),
+      receivedQty: num(item.receivedQty),
+      acceptedQty: num(item.acceptedQty),
+      shortQty: num(item.shortQty)
+    })) : [],
+    packingItems: Array.isArray(report.packingItems) ? report.packingItems.map((item) => ({
+      ...item,
+      qty: num(item.qty)
+    })) : [],
+    comparisonRows: Array.isArray(report.comparisonRows) ? report.comparisonRows.map((row) => ({
+      ...row,
+      packingQty: num(row.packingQty),
+      challanQty: num(row.challanQty),
+      acceptedQty: num(row.acceptedQty),
+      shortageQty: num(row.shortageQty)
+    })) : [],
+    totalChallanQty: num(report.totalChallanQty || (report.items || []).reduce((sum, item) => sum + num(item.challanQty), 0)),
+    totalReceivedQty: num(report.totalReceivedQty || (report.items || []).reduce((sum, item) => sum + num(item.receivedQty), 0)),
+    totalAcceptedQty: num(report.totalAcceptedQty || (report.items || []).reduce((sum, item) => sum + num(item.acceptedQty), 0)),
+    totalShortQty: num(report.totalShortQty || (report.items || []).reduce((sum, item) => sum + num(item.shortQty), 0))
   }));
   state.washcareRecords = (Array.isArray(state.washcareRecords) ? state.washcareRecords : []).map((record) => ({
     ...record,
@@ -4006,6 +5100,106 @@ function loadLocalState() {
   } catch {
     return clone(DEFAULTS);
   }
+}
+
+async function loadStoredStyleImages() {
+  const entries = await listStoredStyleImages();
+  styleImageCache = new Map(entries);
+}
+
+async function migrateInlineStyleImages() {
+  let changed = false;
+  for (const style of state.styles) {
+    const imageValue = clean(style.image);
+    if (!/^data:image\//i.test(imageValue)) continue;
+    style.image = await prepareStyleImageForState(imageValue, style.id);
+    changed = true;
+  }
+  if (changed) saveLocalState();
+}
+
+async function prepareStyleImageForState(imageValue, styleId) {
+  const value = clean(imageValue);
+  if (!styleId) return value;
+  if (!value) {
+    await deleteStoredStyleImage(styleId);
+    return "";
+  }
+  if (/^data:image\//i.test(value)) {
+    await putStoredStyleImage(styleId, value);
+    return storedImageRef(styleId);
+  }
+  if (isStoredImageRef(value)) return value;
+  await deleteStoredStyleImage(styleId);
+  return value;
+}
+
+async function putStoredStyleImage(styleId, dataUrl) {
+  styleImageCache.set(styleId, dataUrl);
+  await withStyleImageStore("readwrite", (store, resolve, reject) => {
+    const request = store.put({ id: styleId, dataUrl });
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error || new Error("Could not save style image"));
+  });
+}
+
+async function deleteStoredStyleImage(styleId) {
+  styleImageCache.delete(styleId);
+  await withStyleImageStore("readwrite", (store, resolve, reject) => {
+    const request = store.delete(styleId);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error || new Error("Could not delete style image"));
+  });
+}
+
+async function listStoredStyleImages() {
+  return withStyleImageStore("readonly", (store, resolve, reject) => {
+    if (typeof store.getAll === "function") {
+      const request = store.getAll();
+      request.onsuccess = () => resolve((request.result || []).map((item) => [item.id, item.dataUrl]));
+      request.onerror = () => reject(request.error || new Error("Could not load style images"));
+      return;
+    }
+    const request = store.openCursor();
+    const rows = [];
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve(rows);
+        return;
+      }
+      rows.push([cursor.value.id, cursor.value.dataUrl]);
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error || new Error("Could not load style images"));
+  });
+}
+
+function withStyleImageStore(mode, executor) {
+  return openStyleImageDb().then((db) => new Promise((resolve, reject) => {
+    const tx = db.transaction(STYLE_IMAGE_STORE, mode);
+    const store = tx.objectStore(STYLE_IMAGE_STORE);
+    tx.onerror = () => reject(tx.error || new Error("Image storage failed"));
+    executor(store, resolve, reject);
+  }));
+}
+
+function openStyleImageDb() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) {
+      reject(new Error("This browser does not support image storage."));
+      return;
+    }
+    const request = window.indexedDB.open(STYLE_IMAGE_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STYLE_IMAGE_STORE)) {
+        db.createObjectStore(STYLE_IMAGE_STORE, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Could not open image storage"));
+  });
 }
 
 function rowsOrEmpty(rows, colspan, msg) { return rows.length ? rows.join("") : `<tr><td colspan="${colspan}" class="empty-state">${esc(msg)}</td></tr>`; }

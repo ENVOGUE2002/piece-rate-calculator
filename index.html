@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Piece Rate Calculator</title>
+  <title>StitchFlow</title>
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
@@ -15,7 +15,7 @@
   <div class="app-shell">
     <aside class="sidebar">
       <p class="eyebrow">Garment Factory</p>
-      <h1>Piece Rate Calculator</h1>
+      <h1>StitchFlow</h1>
       <p class="company-name">ENVOGUE CLOTHING</p>
       <p class="intro">Create styles, enter cutting and checking details, and see billing automatically.</p>
       <nav class="nav">
@@ -25,6 +25,7 @@
         <button class="nav-link" data-tab="production">Production Entry</button>
         <button class="nav-link" data-tab="acceptance">Acceptance Entry</button>
         <button class="nav-link" data-tab="dispatch">Dispatch Entry</button>
+        <button class="nav-link" data-tab="grnstatus">GRN Status</button>
         <button class="nav-link" data-tab="reports">Reports</button>
         <button class="nav-link" data-tab="washcare">Washcare</button>
       </nav>
@@ -106,11 +107,16 @@
           <section class="card">
             <div class="section-title"><h3>New Style</h3></div>
             <div class="action-row">
-              <label class="ghost file-label">Upload Styles CSV<input type="file" id="styleImportInput" accept=".csv,text/csv"></label>
+              <label class="ghost file-label">Upload Styles CSV/XLSX<input type="file" id="styleImportInput" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
               <label class="ghost file-label">Select Style Images<input type="file" id="styleImageImportInput" accept="image/*" multiple></label>
               <a class="ghost file-label" href="style-sample.csv" download>Style Sample</a>
             </div>
-            <p class="status-text">For CSV image import, put the image file name in the `image` column, then select those image files here.</p>
+            <div class="action-row">
+              <label class="field-hint"><input type="checkbox" id="skipExistingStylesToggle" checked> Skip styles already created</label>
+              <button type="button" id="downloadPendingCmtSheet" class="ghost">Download Pending CMT Sheet</button>
+              <label class="ghost file-label">Upload CMT Update Sheet<input type="file" id="cmtUpdateImportInput" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
+            </div>
+            <p class="status-text">CSV and Excel style sheets are supported. For CSV image import, put the image file name in the `image` column, then select those image files here.</p>
             <form id="styleForm" class="form-grid">
               <label>Style Number<input type="text" name="styleNumber" required placeholder="ST-101"></label>
               <label>Buyer Name<input type="text" name="buyerName"></label>
@@ -277,6 +283,57 @@
             <div class="table-wrap"><table><thead><tr><th>Date</th><th>Style</th><th>Total Qty</th><th>Size-wise</th><th>Remarks</th><th>Action</th></tr></thead><tbody id="dispatchEntriesTable"></tbody></table></div>
           </section>
         </div>
+      </section>
+
+      <section class="tab-panel" id="grnstatus">
+        <div class="panel-header"><div><p class="eyebrow">Warehouse Control</p><h2>GRN Status and Shortage Prep</h2></div></div>
+        <div class="grid-two">
+          <section class="card">
+            <div class="section-title">
+              <div>
+                <h3>File Upload</h3>
+                <p class="field-hint">Upload the GRN PDF now to build the full receipt sheet. Later upload the dispatch packing list PDF or XLSX to compare invoice quantity against GRN accepted quantity.</p>
+              </div>
+            </div>
+            <div class="action-row">
+              <label class="ghost file-label">Upload GRN PDF<input type="file" id="grnPdfInput" accept=".pdf,application/pdf" multiple></label>
+              <label class="ghost file-label">Upload Packing List<input type="file" id="grnPackingListInput" accept=".pdf,application/pdf,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
+              <button type="button" class="ghost" id="saveGrnReportBtn">Save GRN Report</button>
+              <button type="button" class="ghost" id="downloadGrnSheetBtn">Download Detail Sheet XLSX</button>
+              <button type="button" class="ghost" id="downloadAllGrnBtn">Download Complete GRN Excel</button>
+            </div>
+            <p class="field-hint" id="grnStatusText">Upload a GRN PDF to extract the complete detail sheet.</p>
+            <div id="grnHeaderSummary" class="grn-header-summary empty-state">No GRN uploaded yet.</div>
+            <div id="grnSummaryCards" class="stats-grid grn-summary-cards"></div>
+          </section>
+          <section class="card">
+            <div class="section-title">
+              <div>
+                <h3>Comparison Summary</h3>
+                <p class="field-hint">When the packing list is uploaded, this section will show invoice quantity, GRN accepted quantity, and shortage.</p>
+              </div>
+            </div>
+            <div class="table-wrap"><table><thead><tr><th>Match Key</th><th>Packing Qty</th><th>GRN Challan</th><th>GRN Accepted</th><th>Shortage</th><th>Status</th></tr></thead><tbody id="grnComparisonTable"></tbody></table></div>
+          </section>
+        </div>
+        <section class="card grn-items-card">
+          <div class="section-title">
+            <div>
+              <h3>GRN Detail Sheet</h3>
+              <p class="field-hint">Extracted directly from the uploaded GRN PDF, including challan, received, accepted, and short quantities item-wise.</p>
+            </div>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>S No.</th><th>Article</th><th>Description</th><th>EAN</th><th>Vendor Article</th><th>UOM</th><th>Challan Qty</th><th>Received Qty</th><th>Accepted Qty</th><th>Short Qty</th><th>Reason</th></tr></thead><tbody id="grnItemsTable"></tbody></table></div>
+        </section>
+        <section class="card grn-items-card">
+          <div class="section-title">
+            <div>
+              <h3>Saved GRN Reports</h3>
+              <p class="field-hint">Saved GRNs stay in the app and are included in the complete Excel download.</p>
+            </div>
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>GRN No.</th><th>Date</th><th>Invoice No.</th><th>PO No.</th><th>Supplier</th><th>Accepted Qty</th><th>Short Qty</th><th>Updated</th></tr></thead><tbody id="grnSavedTable"></tbody></table></div>
+        </section>
       </section>
 
       <section class="tab-panel" id="reports">
@@ -488,6 +545,6 @@
       <button type="button" class="ghost remove-style-variant">Remove</button>
     </div>
   </template>
-  <script src="app.js?v=2026-04-18-1"></script>
+  <script src="app.js?v=2026-04-20-2"></script>
 </body>
 </html>
