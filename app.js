@@ -17,6 +17,7 @@ const SECTION_ACCESS_LABELS = {
 };
 const DEFAULTS = {
   styles: [],
+  styleImages: {},
   cuttingEntries: [],
   styleProductionEntries: [],
   productionEntries: [],
@@ -238,6 +239,7 @@ async function init() {
   state = await loadInitialState();
   normalizeState();
   await loadStoredStyleImages();
+  await migrateStoredImageRefsToState();
   await migrateInlineStyleImages();
   configurePdfJs();
   bindTabs();
@@ -1820,7 +1822,10 @@ function buildStylePayload(payload) {
 function styleImageSrc(style) {
   const rawValue = clean(style?.image || "");
   if (!rawValue) return "";
-  if (isStoredImageRef(rawValue)) return styleImageCache.get(storedImageKey(rawValue)) || "";
+  if (isStoredImageRef(rawValue)) {
+    const styleId = storedImageKey(rawValue);
+    return clean(state.styleImages?.[styleId] || "") || styleImageCache.get(styleId) || "";
+  }
   return rawValue;
 }
 
@@ -4278,6 +4283,7 @@ function parseSizeList(value) {
 
 function normalizeState() {
   state = { ...clone(DEFAULTS), ...state };
+  state.styleImages = state.styleImages && typeof state.styleImages === "object" ? { ...state.styleImages } : {};
   state.settings = state.settings || {};
   if (!Array.isArray(state.settings.sizes) || !state.settings.sizes.length) {
     state.settings.sizes = [...DEFAULT_SIZE_LIST];
@@ -5107,6 +5113,21 @@ async function loadStoredStyleImages() {
   styleImageCache = new Map(entries);
 }
 
+async function migrateStoredImageRefsToState() {
+  let changed = false;
+  state.styleImages = state.styleImages && typeof state.styleImages === "object" ? state.styleImages : {};
+  for (const style of state.styles) {
+    const imageValue = clean(style?.image);
+    if (!isStoredImageRef(imageValue)) continue;
+    const styleId = storedImageKey(imageValue);
+    const cachedImage = styleImageCache.get(styleId);
+    if (!cachedImage || state.styleImages[styleId]) continue;
+    state.styleImages[styleId] = cachedImage;
+    changed = true;
+  }
+  if (changed) saveLocalState();
+}
+
 async function migrateInlineStyleImages() {
   let changed = false;
   for (const style of state.styles) {
@@ -5121,15 +5142,23 @@ async function migrateInlineStyleImages() {
 async function prepareStyleImageForState(imageValue, styleId) {
   const value = clean(imageValue);
   if (!styleId) return value;
+  state.styleImages = state.styleImages && typeof state.styleImages === "object" ? state.styleImages : {};
   if (!value) {
+    delete state.styleImages[styleId];
     await deleteStoredStyleImage(styleId);
     return "";
   }
   if (/^data:image\//i.test(value)) {
+    state.styleImages[styleId] = value;
     await putStoredStyleImage(styleId, value);
     return storedImageRef(styleId);
   }
-  if (isStoredImageRef(value)) return value;
+  if (isStoredImageRef(value)) {
+    const cachedImage = styleImageCache.get(styleId);
+    if (cachedImage && !state.styleImages[styleId]) state.styleImages[styleId] = cachedImage;
+    return value;
+  }
+  delete state.styleImages[styleId];
   await deleteStoredStyleImage(styleId);
   return value;
 }
