@@ -9,6 +9,7 @@
   <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="config.js"></script>
 </head>
 <body>
@@ -146,6 +147,10 @@
           </section>
           <section class="card">
             <div class="section-title"><h3>Saved Styles</h3></div>
+            <div class="style-image-diagnostic">
+              <div id="styleImageDiagnosticStatus" class="field-hint">Image diagnostic not run yet.</div>
+              <button type="button" id="runStyleImageDiagnostic" class="ghost small">Run Image Diagnostic</button>
+            </div>
             <label class="list-search">
               Search Style
               <input type="text" id="styleCardSearch" placeholder="Search full style no. or last 2-3 digits">
@@ -545,6 +550,6 @@
       <button type="button" class="ghost remove-style-variant">Remove</button>
     </div>
   </template>
-  <script src="app.js?v=2026-04-20-2"></script>
+  <script src="app.js?v=2026-04-21-1"></script>
 </body>
 </html>

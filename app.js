@@ -102,6 +102,8 @@ const els = {
   panels: document.querySelectorAll(".tab-panel"),
   styleForm: $("styleForm"),
   styleCardSearch: $("styleCardSearch"),
+  runStyleImageDiagnostic: $("runStyleImageDiagnostic"),
+  styleImageDiagnosticStatus: $("styleImageDiagnosticStatus"),
   sizeSettingsForm: $("sizeSettingsForm"),
   sizeListInput: $("sizeListInput"),
   accessCodeForm: $("accessCodeForm"),
@@ -349,6 +351,7 @@ function bindForms() {
     e.target.closest(".style-variant-row")?.remove();
   });
   els.styleCards.addEventListener("click", handleStyleCardAction);
+  els.runStyleImageDiagnostic?.addEventListener("click", runStyleImageDiagnostic);
   els.cuttingReportTable?.addEventListener("click", handleImagePreviewAction);
   els.dispatchReportTable?.addEventListener("click", handleImagePreviewAction);
   els.cuttingEntriesTable.addEventListener("click", handleCuttingTableAction);
@@ -804,6 +807,7 @@ function renderOperationSelect() {
 
 function renderStyles() {
   const filteredStyles = filterStyles(els.styleCardSearch?.value || "");
+  updateStyleImageDiagnosticStatus();
   els.styleCards.innerHTML = filteredStyles.length ? filteredStyles.map((style) => `
     <article class="style-card">
       ${styleImageSrc(style) ? `
@@ -1829,6 +1833,68 @@ function styleImageSrc(style) {
   return rawValue;
 }
 
+function getStyleImageDiagnostics() {
+  const summary = {
+    total: state.styles.length,
+    visible: 0,
+    missing: 0,
+    legacyRecoverable: 0,
+    legacyMissing: 0
+  };
+  const details = [];
+  state.styles.forEach((style) => {
+    const rawValue = clean(style?.image || "");
+    const resolved = clean(styleImageSrc(style));
+    if (resolved) {
+      summary.visible += 1;
+      return;
+    }
+    if (!rawValue) {
+      summary.missing += 1;
+      details.push(`${styleLabel(style)} - no image saved`);
+      return;
+    }
+    if (isStoredImageRef(rawValue)) {
+      const styleId = storedImageKey(rawValue);
+      const cachedImage = clean(state.styleImages?.[styleId] || "") || styleImageCache.get(styleId) || "";
+      if (cachedImage) {
+        summary.legacyRecoverable += 1;
+        details.push(`${styleLabel(style)} - legacy image can be recovered in this browser`);
+      } else {
+        summary.legacyMissing += 1;
+        details.push(`${styleLabel(style)} - legacy image reference exists but image data is missing`);
+      }
+      return;
+    }
+    summary.missing += 1;
+    details.push(`${styleLabel(style)} - image path saved but not rendering`);
+  });
+  return { summary, details };
+}
+
+function updateStyleImageDiagnosticStatus() {
+  if (!els.styleImageDiagnosticStatus) return;
+  const { summary } = getStyleImageDiagnostics();
+  els.styleImageDiagnosticStatus.textContent = `Visible: ${summary.visible} | Missing: ${summary.missing} | Legacy recoverable: ${summary.legacyRecoverable} | Legacy missing: ${summary.legacyMissing}`;
+}
+
+function runStyleImageDiagnostic() {
+  const { summary, details } = getStyleImageDiagnostics();
+  updateStyleImageDiagnosticStatus();
+  const lines = [
+    `Total styles: ${summary.total}`,
+    `Visible images: ${summary.visible}`,
+    `Missing images: ${summary.missing}`,
+    `Legacy recoverable in this browser: ${summary.legacyRecoverable}`,
+    `Legacy missing image data: ${summary.legacyMissing}`
+  ];
+  if (details.length) {
+    lines.push("", "Details:", ...details.slice(0, 40));
+    if (details.length > 40) lines.push(`...and ${details.length - 40} more`);
+  }
+  alert(lines.join("\n"));
+}
+
 function isStoredImageRef(value) {
   return clean(value).startsWith(STORED_IMAGE_PREFIX);
 }
@@ -2781,11 +2847,15 @@ async function parseStyleWorkbook(file) {
   if (!window.ExcelJS?.Workbook) {
     throw new Error("Excel import is not available.");
   }
+  const workbookBuffer = await file.arrayBuffer();
   const workbook = new window.ExcelJS.Workbook();
-  await workbook.xlsx.load(await file.arrayBuffer());
+  await workbook.xlsx.load(workbookBuffer);
   const worksheet = workbook.worksheets.find((sheet) => sheet.actualRowCount > 0);
   if (!worksheet) return [];
-  const imageByRow = extractWorkbookImagesByRow(workbook, worksheet);
+  const imageByRow = mergeMaps(
+    await extractWorkbookImagesByRowFromZip(workbookBuffer, worksheet.name),
+    extractWorkbookImagesByRow(workbook, worksheet)
+  );
   const rows = worksheet.getSheetValues().slice(1).map((row) => Array.isArray(row) ? row.slice(1) : []);
   const headerRowIndex = rows.findIndex((row) => detectStyleImportHeader(row));
   if (headerRowIndex === -1) return [];
@@ -2824,7 +2894,7 @@ function parseVendorStyleWorkbookRows(headers, dataRows, startRowNumber = 2, ima
   return dataRows.map((row, index) => {
     const raw = Object.fromEntries(headers.map((header, index) => [header, excelCellToText(row[index])]));
     const sheetRowNumber = startRowNumber + index;
-    const imageFromSheet = imageByRow.get(sheetRowNumber) || "";
+    const imageFromSheet = imageByRow.get(sheetRowNumber) || clean(raw.IMAGE || raw.Image || raw.image);
     const styleNumber = clean(raw["UVP Style ID"] || raw["Vendor Style Code"]);
     if (styleNumber !== lastStyleNumber) lastImage = "";
     if (imageFromSheet) lastImage = imageFromSheet;
@@ -2852,7 +2922,8 @@ function parseVendorStyleWorkbookRows(headers, dataRows, startRowNumber = 2, ima
 
 async function importStyleRows(rows, importedImageMap = new Map(), options = {}) {
   const summary = { created: 0, updated: 0, skipped: 0 };
-  for (const row of rows) {
+  const rowsWithStyleImages = applySharedImagesByStyleNumber(rows, importedImageMap);
+  for (const row of rowsWithStyleImages) {
     const styleNumber = clean(row.styleNumber);
     if (!styleNumber) continue;
     const existing = state.styles.find((s) => s.styleNumber.toLowerCase() === styleNumber.toLowerCase());
@@ -2862,20 +2933,22 @@ async function importStyleRows(rows, importedImageMap = new Map(), options = {})
       summary.skipped += 1;
       continue;
     }
-    const operations = extractOperations(row);
+    const currentStyle = variant || existing || {};
+    const importedOperations = extractOperations(row);
+    const operations = importedOperations.length ? importedOperations : (Array.isArray(currentStyle.operations) ? currentStyle.operations : []);
     const resolvedImage = resolveImportedImage(row.image, importedImageMap);
     const styleId = variant?.id || uid();
     const payload = {
       id: styleId,
       styleNumber,
-      buyerName: clean(row.buyerName),
-      styleName: clean(row.styleName),
+      buyerName: clean(row.buyerName) || clean(currentStyle.buyerName),
+      styleName: clean(row.styleName) || clean(currentStyle.styleName),
       color,
       orderQty: num(row.orderQty),
-      cmtRate: num(row.cmtRate),
-      serviceChargePct: num(row.serviceChargePct),
+      cmtRate: hasImportValue(row.cmtRate) ? num(row.cmtRate) : num(currentStyle.cmtRate),
+      serviceChargePct: hasImportValue(row.serviceChargePct) ? num(row.serviceChargePct) : num(currentStyle.serviceChargePct),
       image: await prepareStyleImageForState(resolvedImage || styleImageSrc(variant) || styleImageSrc(existing) || existing?.image || "", styleId),
-      notes: clean(row.notes),
+      notes: clean(row.notes) || clean(currentStyle.notes),
       operations
     };
     if (variant) {
@@ -2890,6 +2963,25 @@ async function importStyleRows(rows, importedImageMap = new Map(), options = {})
     }
   }
   return summary;
+}
+
+function hasImportValue(value) {
+  return clean(value) !== "";
+}
+
+function applySharedImagesByStyleNumber(rows, importedImageMap = new Map()) {
+  const imageByStyleNumber = new Map();
+  rows.forEach((row) => {
+    const styleNumber = normalizeKey(row.styleNumber);
+    if (!styleNumber || imageByStyleNumber.has(styleNumber)) return;
+    const resolvedImage = resolveImportedImage(row.image, importedImageMap);
+    if (resolvedImage) imageByStyleNumber.set(styleNumber, resolvedImage);
+  });
+  return rows.map((row) => {
+    const styleNumber = normalizeKey(row.styleNumber);
+    const sharedImage = imageByStyleNumber.get(styleNumber);
+    return sharedImage ? { ...row, image: sharedImage } : row;
+  });
 }
 
 function detectStyleImportHeader(row = []) {
@@ -2967,6 +3059,118 @@ function extractWorkbookImagesByRow(workbook, worksheet) {
     }
   });
   return map;
+}
+
+async function extractWorkbookImagesByRowFromZip(workbookBuffer, worksheetName = "") {
+  const map = new Map();
+  if (!window.JSZip || !window.DOMParser) return map;
+  try {
+    const zip = await window.JSZip.loadAsync(workbookBuffer);
+    const sheetPath = await findWorkbookSheetPath(zip, worksheetName);
+    if (!sheetPath) return map;
+    const sheetXml = await readZipText(zip, sheetPath);
+    const sheetDoc = parseXml(sheetXml);
+    const drawingRelId = [...sheetDoc.getElementsByTagNameNS("*", "drawing")]
+      .map((node) => node.getAttribute("r:id") || node.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id"))
+      .find(Boolean);
+    if (!drawingRelId) return map;
+
+    const sheetRelsPath = relationshipPath(sheetPath);
+    const sheetRelTarget = await findRelationshipTarget(zip, sheetRelsPath, drawingRelId);
+    const drawingPath = resolveZipPath(sheetPath, sheetRelTarget);
+    if (!drawingPath) return map;
+
+    const drawingXml = await readZipText(zip, drawingPath);
+    const drawingDoc = parseXml(drawingXml);
+    const drawingRelsPath = relationshipPath(drawingPath);
+    const mediaByRelId = await readRelationshipTargets(zip, drawingRelsPath);
+    const anchors = [
+      ...drawingDoc.getElementsByTagNameNS("*", "oneCellAnchor"),
+      ...drawingDoc.getElementsByTagNameNS("*", "twoCellAnchor")
+    ];
+    for (const anchor of anchors) {
+      const from = anchor.getElementsByTagNameNS("*", "from")[0];
+      const rowNode = from?.getElementsByTagNameNS("*", "row")?.[0];
+      const rowNumber = Number(rowNode?.textContent || "") + 1;
+      const blip = anchor.getElementsByTagNameNS("*", "blip")[0];
+      const embedId = blip?.getAttribute("r:embed") || blip?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "embed");
+      const mediaTarget = mediaByRelId.get(embedId);
+      const mediaPath = resolveZipPath(drawingPath, mediaTarget);
+      const mediaFile = mediaPath ? zip.file(mediaPath) : null;
+      if (!rowNumber || !mediaFile) continue;
+      const extension = clean(mediaPath.split(".").pop() || "png").toLowerCase() || "png";
+      const base64 = await mediaFile.async("base64");
+      if (base64) map.set(rowNumber, `data:image/${extension};base64,${base64}`);
+    }
+  } catch (error) {
+    console.warn("Could not extract workbook images from the XLSX package:", error);
+  }
+  return map;
+}
+
+async function findWorkbookSheetPath(zip, worksheetName = "") {
+  const workbookXml = await readZipText(zip, "xl/workbook.xml");
+  const workbookDoc = parseXml(workbookXml);
+  const rels = await readRelationshipTargets(zip, "xl/_rels/workbook.xml.rels");
+  const sheets = [...workbookDoc.getElementsByTagNameNS("*", "sheet")];
+  const targetSheet = sheets.find((sheet) => clean(sheet.getAttribute("name")) === clean(worksheetName)) || sheets[0];
+  const relId = targetSheet?.getAttribute("r:id") || targetSheet?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
+  return resolveZipPath("xl/workbook.xml", rels.get(relId));
+}
+
+async function findRelationshipTarget(zip, relsPath, relId) {
+  const targets = await readRelationshipTargets(zip, relsPath);
+  return targets.get(relId) || "";
+}
+
+async function readRelationshipTargets(zip, relsPath) {
+  const map = new Map();
+  const xml = await readZipText(zip, relsPath);
+  if (!xml) return map;
+  const doc = parseXml(xml);
+  [...doc.getElementsByTagNameNS("*", "Relationship")].forEach((rel) => {
+    map.set(rel.getAttribute("Id"), rel.getAttribute("Target"));
+  });
+  return map;
+}
+
+async function readZipText(zip, path) {
+  const file = path ? zip.file(path) : null;
+  return file ? file.async("text") : "";
+}
+
+function parseXml(xml) {
+  return new DOMParser().parseFromString(xml, "application/xml");
+}
+
+function relationshipPath(path) {
+  const parts = clean(path).split("/");
+  const fileName = parts.pop();
+  return `${parts.join("/")}/_rels/${fileName}.rels`;
+}
+
+function resolveZipPath(fromPath, targetPath) {
+  const target = clean(targetPath);
+  if (!target) return "";
+  if (target.startsWith("/")) return target.slice(1);
+  const stack = clean(fromPath).split("/");
+  stack.pop();
+  target.split("/").forEach((part) => {
+    if (!part || part === ".") return;
+    if (part === "..") stack.pop();
+    else stack.push(part);
+  });
+  return stack.join("/");
+}
+
+function mergeMaps(...maps) {
+  const merged = new Map();
+  maps.forEach((map) => {
+    map.forEach((value, key) => {
+      if (value) merged.set(key, value);
+    });
+  });
+  return merged;
 }
 
 function imageAnchorRowNumber(image) {
@@ -5096,7 +5300,17 @@ function formatSyncTime(value) {
 }
 
 function saveLocalState(nextState = state) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(localStateSnapshot(nextState)));
+}
+
+function localStateSnapshot(sourceState = state) {
+  const snapshot = clone(sourceState);
+  snapshot.styleImages = {};
+  snapshot.styles = (snapshot.styles || []).map((style) => {
+    if (!/^data:image\//i.test(clean(style.image))) return style;
+    return { ...style, image: storedImageRef(style.id) };
+  });
+  return snapshot;
 }
 
 function loadLocalState() {
@@ -5120,9 +5334,10 @@ async function migrateStoredImageRefsToState() {
     const imageValue = clean(style?.image);
     if (!isStoredImageRef(imageValue)) continue;
     const styleId = storedImageKey(imageValue);
-    const cachedImage = styleImageCache.get(styleId);
-    if (!cachedImage || state.styleImages[styleId]) continue;
+    const cachedImage = clean(state.styleImages[styleId] || "") || styleImageCache.get(styleId) || "";
+    if (!cachedImage) continue;
     state.styleImages[styleId] = cachedImage;
+    if (!styleImageCache.has(styleId)) await putStoredStyleImage(styleId, cachedImage);
     changed = true;
   }
   if (changed) saveLocalState();
@@ -5154,9 +5369,13 @@ async function prepareStyleImageForState(imageValue, styleId) {
     return storedImageRef(styleId);
   }
   if (isStoredImageRef(value)) {
-    const cachedImage = styleImageCache.get(styleId);
-    if (cachedImage && !state.styleImages[styleId]) state.styleImages[styleId] = cachedImage;
-    return value;
+    const cachedImage = clean(state.styleImages[styleId] || "") || styleImageCache.get(styleId) || "";
+    if (cachedImage) {
+      state.styleImages[styleId] = cachedImage;
+      if (!styleImageCache.has(styleId)) await putStoredStyleImage(styleId, cachedImage);
+      return value;
+    }
+    return "";
   }
   delete state.styleImages[styleId];
   await deleteStoredStyleImage(styleId);
