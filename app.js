@@ -217,6 +217,7 @@ const els = {
   exportBtn: $("exportBtn"),
   importInput: $("importInput"),
   styleImportInput: $("styleImportInput"),
+  styleImageRecoveryInput: $("styleImageRecoveryInput"),
   styleImageImportInput: $("styleImageImportInput"),
   skipExistingStylesToggle: $("skipExistingStylesToggle"),
   downloadPendingCmtSheet: $("downloadPendingCmtSheet"),
@@ -429,6 +430,7 @@ function bindForms() {
   els.exportBtn.addEventListener("click", exportData);
   els.importInput.addEventListener("change", importData);
   els.styleImportInput.addEventListener("change", importStylesCsv);
+  els.styleImageRecoveryInput?.addEventListener("change", importStyleImageSheet);
   els.styleImageImportInput?.addEventListener("change", importStylesCsvFromPendingSelection);
   els.downloadPendingCmtSheet?.addEventListener("click", downloadPendingCmtSheet);
   els.cmtUpdateImportInput?.addEventListener("change", importCmtUpdateSheet);
@@ -2586,6 +2588,30 @@ async function importStylesCsv(e) {
   await importPendingStylesCsv();
 }
 
+async function importStyleImageSheet(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  try {
+    const rows = await parseStyleImportFile(file);
+    if (styleImportNeedsLocalImages(rows) && !els.styleImageImportInput?.files?.length) {
+      alert("This image recovery file uses image file names. Please select those image files in 'Select Style Images' and upload again.");
+      return;
+    }
+    const importedImageMap = await buildImportedImageMap(els.styleImageImportInput?.files);
+    const summary = await importStyleRows(rows, importedImageMap, {
+      updateImagesOnly: true
+    });
+    await persistState();
+    alert(`Style image recovery finished.\nUpdated: ${summary.updated}\nSkipped: ${summary.skipped}`);
+  } catch (error) {
+    console.error("Style image recovery failed:", error);
+    alert(`Could not import the style image file.${clean(error?.message) ? `\n${clean(error.message)}` : ""}`);
+  } finally {
+    if (els.styleImageRecoveryInput) els.styleImageRecoveryInput.value = "";
+    if (els.styleImageImportInput) els.styleImageImportInput.value = "";
+  }
+}
+
 async function importStylesCsvFromPendingSelection() {
   if (!pendingStyleImportFile && !els.styleImportInput?.files?.[0]) return;
   pendingStyleImportFile = pendingStyleImportFile || els.styleImportInput.files[0];
@@ -2797,6 +2823,42 @@ function parseCsv(text) {
   });
 }
 
+const STYLE_IMPORT_FIELD_ALIASES = {
+  stylenumber: "styleNumber",
+  stylecode: "styleNumber",
+  styleno: "styleNumber",
+  styleid: "styleNumber",
+  vendorstylecode: "styleNumber",
+  uvpstyleid: "styleNumber",
+  color: "color",
+  colour: "color",
+  colorname: "color",
+  colourname: "color",
+  vendorcolorname: "color",
+  image: "image",
+  imagename: "image",
+  imageurl: "image",
+  imagepath: "image",
+  photourl: "image",
+  photo: "image",
+  buyer: "buyerName",
+  buyername: "buyerName",
+  stylename: "styleName",
+  styledescription: "styleName",
+  description: "styleName",
+  orderqty: "orderQty",
+  orderquantity: "orderQty",
+  qty: "orderQty",
+  vendorcapacity: "orderQty",
+  cmtrate: "cmtRate",
+  totalcmt: "cmtRate",
+  servicechargepct: "serviceChargePct",
+  servicechargepercent: "serviceChargePct",
+  servicechargepercentage: "serviceChargePct",
+  notes: "notes",
+  remarks: "notes"
+};
+
 function splitCsvLine(line) {
   const result = [];
   let current = "";
@@ -2835,7 +2897,7 @@ async function parseStyleImportFile(file) {
   if (lowerName.endsWith(".xlsx")) {
     return parseStyleWorkbook(file);
   }
-  return parseCsv(await file.text());
+  return parseCsv(await file.text()).map((row) => normalizeStyleImportRow(row));
 }
 
 async function parseWorkbookOrCsvRows(file) {
@@ -2869,7 +2931,10 @@ async function parseStyleWorkbook(file) {
     return parseVendorStyleWorkbookRows(headers, dataRows, headerRowIndex + 2, imageByRow);
   }
   return dataRows
-    .map((row) => Object.fromEntries(headers.map((header, index) => [header, excelCellToText(row[index])])))
+    .map((row, index) => normalizeStyleImportRow(
+      Object.fromEntries(headers.map((header, columnIndex) => [header, excelCellToText(row[columnIndex])])),
+      imageByRow.get(headerRowIndex + 2 + index) || ""
+    ))
     .filter((row) => Object.values(row).some((value) => clean(value)));
 }
 
@@ -2909,7 +2974,7 @@ function parseVendorStyleWorkbookRows(headers, dataRows, startRowNumber = 2, ima
       raw.Fabric ? `Fabric: ${clean(raw.Fabric)}` : "",
       raw["HSN Code"] ? `HSN Code: ${clean(raw["HSN Code"])}` : ""
     ].filter(Boolean).join(" | ");
-    return {
+    return normalizeStyleImportRow({
       styleNumber,
       buyerName: "",
       styleName,
@@ -2919,7 +2984,7 @@ function parseVendorStyleWorkbookRows(headers, dataRows, startRowNumber = 2, ima
       serviceChargePct: "",
       image: imageFromSheet || lastImage,
       notes
-    };
+    });
   }).filter((row) => row.styleNumber && row.color);
 }
 
@@ -2929,10 +2994,17 @@ async function importStyleRows(rows, importedImageMap = new Map(), options = {})
   for (const row of rowsWithStyleImages) {
     const styleNumber = clean(row.styleNumber);
     if (!styleNumber) continue;
-    const existing = state.styles.find((s) => s.styleNumber.toLowerCase() === styleNumber.toLowerCase());
+    const matchingStyles = state.styles.filter((s) => s.styleNumber.toLowerCase() === styleNumber.toLowerCase());
+    const existing = matchingStyles[0];
     const color = clean(row.color);
-    const variant = state.styles.find((s) => s.styleNumber.toLowerCase() === styleNumber.toLowerCase() && clean(s.color).toLowerCase() === color.toLowerCase());
+    const variant = matchingStyles.find((s) => clean(s.color).toLowerCase() === color.toLowerCase());
+    const imageRecoveryOnly = isImageRecoveryImportRow(row);
+    const updateImagesOnly = Boolean(options.updateImagesOnly);
     if (options.skipExisting && variant) {
+      summary.skipped += 1;
+      continue;
+    }
+    if ((imageRecoveryOnly || updateImagesOnly) && !matchingStyles.length) {
       summary.skipped += 1;
       continue;
     }
@@ -2940,6 +3012,27 @@ async function importStyleRows(rows, importedImageMap = new Map(), options = {})
     const importedOperations = extractOperations(row);
     const operations = importedOperations.length ? importedOperations : (Array.isArray(currentStyle.operations) ? currentStyle.operations : []);
     const resolvedImage = resolveImportedImage(row.image, importedImageMap);
+    if (updateImagesOnly && !resolvedImage) {
+      summary.skipped += 1;
+      continue;
+    }
+    if (!color && resolvedImage && matchingStyles.length > 1 && (imageRecoveryOnly || updateImagesOnly)) {
+      for (const style of matchingStyles) {
+        style.image = await prepareStyleImageForState(resolvedImage || styleImageSrc(style) || style.image || "", style.id);
+      }
+      summary.updated += matchingStyles.length;
+      continue;
+    }
+    if ((imageRecoveryOnly || updateImagesOnly) && (variant || existing)) {
+      const targetStyle = variant || existing;
+      targetStyle.image = await prepareStyleImageForState(resolvedImage || styleImageSrc(targetStyle) || targetStyle.image || "", targetStyle.id);
+      summary.updated += 1;
+      continue;
+    }
+    if (updateImagesOnly) {
+      summary.skipped += 1;
+      continue;
+    }
     const styleId = variant?.id || uid();
     const payload = {
       id: styleId,
@@ -2972,6 +3065,17 @@ function hasImportValue(value) {
   return clean(value) !== "";
 }
 
+function isImageRecoveryImportRow(row = {}) {
+  return !clean(row.color)
+    && !clean(row.buyerName)
+    && !clean(row.styleName)
+    && !clean(row.orderQty)
+    && !clean(row.cmtRate)
+    && !clean(row.serviceChargePct)
+    && !clean(row.notes)
+    && !extractOperations(row).length;
+}
+
 function applySharedImagesByStyleNumber(rows, importedImageMap = new Map()) {
   const imageByStyleNumber = new Map();
   rows.forEach((row) => {
@@ -2994,6 +3098,30 @@ function detectStyleImportHeader(row = []) {
 
 function normalizeImportHeader(value) {
   return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizeStyleImportRow(row = {}, fallbackImage = "") {
+  const normalized = {};
+  Object.entries(row || {}).forEach(([rawKey, rawValue]) => {
+    const key = clean(rawKey);
+    const value = rawValue ?? "";
+    if (!key) return;
+    const normalizedKey = normalizeImportHeader(key);
+    const mappedKey = STYLE_IMPORT_FIELD_ALIASES[normalizedKey] || normalizeOperationImportKey(normalizedKey) || key;
+    if (!hasImportValue(normalized[mappedKey]) || hasImportValue(value)) {
+      normalized[mappedKey] = value;
+    }
+  });
+  if (fallbackImage && !clean(normalized.image)) {
+    normalized.image = fallbackImage;
+  }
+  return normalized;
+}
+
+function normalizeOperationImportKey(normalizedKey) {
+  const match = normalizedKey.match(/^operation(\d+)(name|rate)$/);
+  if (!match) return "";
+  return `operation${match[1]}${match[2] === "name" ? "Name" : "Rate"}`;
 }
 
 function operationRateByName(style, operationName) {

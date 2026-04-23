@@ -111,6 +111,7 @@
             <div class="section-title"><h3>New Style</h3></div>
             <div class="action-row">
               <label class="ghost file-label">Upload Styles CSV/XLSX<input type="file" id="styleImportInput" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
+              <label class="ghost file-label">Upload Style Images Only<input type="file" id="styleImageRecoveryInput" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
               <label class="ghost file-label">Select Style Images<input type="file" id="styleImageImportInput" accept="image/*" multiple></label>
               <a class="ghost file-label" href="style-sample.csv" download>Style Sample</a>
             </div>
@@ -119,7 +120,7 @@
               <button type="button" id="downloadPendingCmtSheet" class="ghost">Download Pending CMT Sheet</button>
               <label class="ghost file-label">Upload CMT Update Sheet<input type="file" id="cmtUpdateImportInput" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
             </div>
-            <p class="status-text">CSV and Excel style sheets are supported. For CSV image import, put the image file name in the `image` column, then select those image files here.</p>
+            <p class="status-text">CSV and Excel style sheets are supported. For image recovery, use `Upload Style Images Only` with a sheet containing `Style Number` and `image`, or place the picture directly in the Excel row. That image-only upload will update existing styles and will not create new ones.</p>
             <form id="styleForm" class="form-grid">
               <label>Style Number<input type="text" name="styleNumber" required placeholder="ST-101"></label>
               <label>Buyer Name<input type="text" name="buyerName"></label>
