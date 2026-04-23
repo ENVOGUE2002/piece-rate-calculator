@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>StitchFlow</title>
   <link rel="stylesheet" href="styles.css">
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage-compat.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.js"></script>
@@ -42,11 +44,11 @@
       </div>
       <div class="sidebar-card">
         <h2>Cloud Sync</h2>
-        <p>Connect Supabase to share the same data across multiple PCs.</p>
+        <p>Connect Firebase to share the same data and style images across multiple PCs.</p>
         <ul class="sidebar-list">
-          <li>Copy your Project URL into `config.js`</li>
-          <li>Copy your anon key into `config.js`</li>
-          <li>Run the SQL from `supabase-schema.sql`</li>
+          <li>Copy your Firebase web config into `config.js`</li>
+          <li>Enable Realtime Database for shared app data</li>
+          <li>Enable Storage for style images and report previews</li>
         </ul>
       </div>
       <div class="sidebar-card">

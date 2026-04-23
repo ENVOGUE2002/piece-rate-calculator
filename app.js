@@ -84,11 +84,14 @@ const DEFAULTS = {
 const CLOUD_REFRESH_MS = 15000;
 
 let state = clone(DEFAULTS);
-let supabaseClient = null;
+let firebaseApp = null;
+let firebaseDb = null;
+let firebaseStorage = null;
 let lastCloudUpdatedAt = "";
 let cloudRefreshTimer = null;
 let isApplyingRemoteState = false;
 let isSyncing = false;
+let hasPendingCloudChanges = false;
 let pastedStyleImageDataUrl = "";
 let activeSharedSection = "";
 let pendingStyleImportFile = null;
@@ -3523,16 +3526,17 @@ async function extractPdfPlainTextViaServer(file) {
   if (!response.ok || !data) {
     throw new Error(data?.details || data?.error || `Server extraction failed with HTTP ${response.status}.`);
   }
-  const normalized = clean(data.text);
+  const fullText = clean(data.rawText || data.text);
+  const normalized = clean(data.normalizedText || data.text);
   return {
-    fullText: normalized,
+    fullText,
     normalized
   };
 }
 
 async function extractGrnReportDetails(file) {
   const { fullText, normalized } = await extractPdfPlainText(file);
-  const items = parseGrnItems(normalized);
+  const items = parseGrnItems(fullText, normalized);
   return {
     grnNumber: extractReportField(normalized, /Goods Receipt Note No\.\s*:?\s*([A-Za-z0-9/-]+)/i),
     grnDate: normalizeDateValue(extractReportField(normalized, /Goods Receipt Note No\.\s*:?\s*[A-Za-z0-9/-]+\s+Date:?\s*([0-9./-]+)/i)),
@@ -3563,28 +3567,107 @@ async function extractGrnReportDetails(file) {
   };
 }
 
-function parseGrnItems(text) {
-  const tableText = extractReportField(text, /S No\s+Article(.+?)Total Qty UOM wise/i) || text;
-  const pattern = /(\d+)\s+(\d{12,})\s+(.+?)\s+(\d{13})\s+([A-Za-z0-9/-]+)\s+(EA|PCS|PC|NOS)\s+(\d+)\s+(\d+)\s+(\d+)(?:\s+(\d+)\s+(Short\s+Recvd\.?))?/gi;
+function parseGrnItems(text, normalizedText = "") {
+  const rawTableText = extractReportField(text, /S No\s+Article([\s\S]+?)Total Qty UOM wise/i) || text;
+  const normalizedTableText = extractReportField(normalizedText || text, /S No\s+Article(.+?)Total Qty UOM wise/i) || normalizedText || text;
+  const lineItems = parseGrnItemsFromLines(rawTableText);
+  if (lineItems.length) return lineItems;
+  return parseGrnItemsFromNormalizedText(normalizedTableText);
+}
+
+function parseGrnItemsFromLines(text) {
+  const items = [];
+  const pattern = /^\s*(\d+)\s+(\d{6,})\s+(.+?)\s+(\d{8,14})\s+(?:(\S+)\s+)?(EA|PCS|PC|NOS)\s+(\d+)\s+(\d+)\s+(\d+)(?:\s+(\d+))?(?:\s+(.+?))?\s*$/i;
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    const match = line.match(pattern);
+    if (!match) continue;
+    const [, serialNo, article, description, ean, vendorArticleNo, uom, challanQty, receivedQty, acceptedQty, shortQty, reason] = match;
+    items.push(createGrnItem({
+      serialNo,
+      article,
+      description,
+      ean,
+      vendorArticleNo,
+      uom,
+      challanQty,
+      receivedQty,
+      acceptedQty,
+      shortQty,
+      reason
+    }));
+  }
+  return dedupeGrnItems(items);
+}
+
+function parseGrnItemsFromNormalizedText(text) {
+  const pattern = /(\d+)\s+(\d{6,})\s+(.+?)\s+(\d{8,14})\s+(?:(\S+)\s+)?(EA|PCS|PC|NOS)\s+(\d+)\s+(\d+)\s+(\d+)(?:\s+(\d+))?(?:\s+([A-Za-z][A-Za-z.\s]+?))?(?=\s+\d+\s+\d{6,}|\s*$)/gi;
   const items = [];
   let match;
-  while ((match = pattern.exec(tableText))) {
+  while ((match = pattern.exec(text))) {
     const [, serialNo, article, description, ean, vendorArticleNo, uom, challanQty, receivedQty, acceptedQty, shortQty, reason] = match;
-    items.push({
-      serialNo: num(serialNo),
-      article: clean(article),
-      description: clean(description.replace(/\s+/g, " ")),
-      ean: clean(ean),
-      vendorArticleNo: clean(vendorArticleNo),
-      uom: clean(uom) || "EA",
-      challanQty: num(challanQty),
-      receivedQty: num(receivedQty),
-      acceptedQty: num(acceptedQty),
-      shortQty: num(shortQty) || Math.max(num(challanQty) - num(acceptedQty), 0),
-      reason: clean(reason) || (num(challanQty) > num(acceptedQty) ? "Short Recvd." : "")
-    });
+    items.push(createGrnItem({
+      serialNo,
+      article,
+      description,
+      ean,
+      vendorArticleNo,
+      uom,
+      challanQty,
+      receivedQty,
+      acceptedQty,
+      shortQty,
+      reason
+    }));
   }
-  return items;
+  return dedupeGrnItems(items);
+}
+
+function createGrnItem({
+  serialNo,
+  article,
+  description,
+  ean,
+  vendorArticleNo,
+  uom,
+  challanQty,
+  receivedQty,
+  acceptedQty,
+  shortQty,
+  reason
+}) {
+  return {
+    serialNo: num(serialNo),
+    article: clean(article),
+    description: clean(String(description || "").replace(/\s+/g, " ")),
+    ean: clean(ean),
+    vendorArticleNo: clean(vendorArticleNo),
+    uom: clean(uom) || "EA",
+    challanQty: num(challanQty),
+    receivedQty: num(receivedQty),
+    acceptedQty: num(acceptedQty),
+    shortQty: num(shortQty) || Math.max(num(challanQty) - num(acceptedQty), 0),
+    reason: clean(reason) || (num(challanQty) > num(acceptedQty) ? "Short Recvd." : "")
+  };
+}
+
+function dedupeGrnItems(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = [
+      num(item.serialNo),
+      normalizeKey(item.article),
+      normalizeKey(item.ean),
+      num(item.challanQty),
+      num(item.acceptedQty)
+    ].join("__");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function extractPackingListDetails(file) {
@@ -5154,6 +5237,9 @@ function csvValue(value) {
 
 async function persistState() {
   normalizeState();
+  if (cloudEnabled()) {
+    hasPendingCloudChanges = true;
+  }
   saveLocalState();
   updateStorageModeUi();
   render();
@@ -5172,9 +5258,14 @@ async function loadInitialState() {
   setSyncStatus("Checking cloud data...");
   try {
     const remote = await fetchCloudState();
+    if (hasPendingCloudChanges && hasMeaningfulState(localState)) {
+      setSyncStatus("Using newer local changes saved in this browser. Cloud sync will retry automatically.");
+      return localState;
+    }
     if (remote?.state) {
       lastCloudUpdatedAt = clean(remote.updatedAt);
       saveLocalState(remote.state);
+      hasPendingCloudChanges = false;
       setSyncStatus(`Connected to cloud. Last sync ${formatSyncTime(remote.updatedAt)}.`);
       return remote.state;
     }
@@ -5183,39 +5274,85 @@ async function loadInitialState() {
     return localState;
   } catch (error) {
     console.error(error);
-    setSyncStatus("Cloud sync could not connect. Using local browser data only.");
+    setSyncStatus(`Cloud sync could not connect. Using local browser data only. ${formatCloudError(error)}`);
     return localState;
   }
 }
 
 function cloudEnabled() {
-  const cfg = window.APP_CONFIG?.supabase;
-  return Boolean(clean(cfg?.url) && clean(cfg?.anonKey) && window.supabase?.createClient);
+  const cfg = window.APP_CONFIG?.firebase;
+  return Boolean(
+    isConfiguredValue(cfg?.apiKey) &&
+    isConfiguredValue(cfg?.authDomain) &&
+    isConfiguredValue(cfg?.projectId) &&
+    isConfiguredValue(cfg?.databaseURL) &&
+    isConfiguredValue(cfg?.storageBucket) &&
+    window.firebase?.initializeApp
+  );
 }
 
-function getSupabaseClient() {
-  if (!cloudEnabled()) return null;
-  if (!supabaseClient) {
-    const cfg = window.APP_CONFIG.supabase;
-    supabaseClient = window.supabase.createClient(cfg.url, cfg.anonKey);
+function looksLikeFirebaseWebAppId(value) {
+  return /^\d+:[^:]+:[^:]+:[A-Za-z0-9_-]+$/i.test(clean(value));
+}
+
+function getFirebaseInitConfig() {
+  const cfg = window.APP_CONFIG?.firebase || {};
+  const initConfig = {
+    apiKey: clean(cfg.apiKey),
+    authDomain: clean(cfg.authDomain),
+    projectId: clean(cfg.projectId),
+    databaseURL: clean(cfg.databaseURL),
+    storageBucket: clean(cfg.storageBucket)
+  };
+  if (looksLikeFirebaseWebAppId(cfg.appId)) {
+    initConfig.appId = clean(cfg.appId);
   }
-  return supabaseClient;
+  if (isConfiguredValue(cfg.messagingSenderId)) {
+    initConfig.messagingSenderId = clean(cfg.messagingSenderId);
+  }
+  if (isConfiguredValue(cfg.measurementId)) {
+    initConfig.measurementId = clean(cfg.measurementId);
+  }
+  return initConfig;
+}
+
+function getFirebaseApp() {
+  if (!cloudEnabled()) return null;
+  if (!firebaseApp) {
+    const cfg = getFirebaseInitConfig();
+    firebaseApp = window.firebase.apps?.length ? window.firebase.app() : window.firebase.initializeApp(cfg);
+    firebaseDb = window.firebase.database(firebaseApp);
+    firebaseStorage = window.firebase.storage(firebaseApp);
+  }
+  return firebaseApp;
+}
+
+function getFirebaseDatabase() {
+  return getFirebaseApp() ? firebaseDb : null;
+}
+
+function getFirebaseStorage() {
+  return getFirebaseApp() ? firebaseStorage : null;
 }
 
 function getCloudAppId() {
-  return clean(window.APP_CONFIG?.supabase?.appId) || "piece-rate-main";
+  return clean(window.APP_CONFIG?.firebase?.cloudAppId || window.APP_CONFIG?.firebase?.appId) || "piece-rate-main";
 }
+
+function getCloudStatePath() {
+  return `apps/${getCloudAppId()}`;
+}
+
 async function fetchCloudState() {
-  const client = getSupabaseClient();
-  if (!client) return null;
-  const { data, error } = await client
-    .from("piece_rate_app_state")
-    .select("state_json, updated_at")
-    .eq("app_id", getCloudAppId())
-    .maybeSingle();
-  if (error) throw error;
+  const db = getFirebaseDatabase();
+  if (!db) return null;
+  const snapshot = await db.ref(getCloudStatePath()).once("value");
+  const data = snapshot.val();
   if (!data?.state_json) return null;
-  return { state: { ...clone(DEFAULTS), ...data.state_json }, updatedAt: data.updated_at || "" };
+  return {
+    state: { ...clone(DEFAULTS), ...decodeFirebaseValue(data.state_json) },
+    updatedAt: data.updated_at || ""
+  };
 }
 
 async function syncStateToCloud() {
@@ -5223,19 +5360,23 @@ async function syncStateToCloud() {
   isSyncing = true;
   setSyncStatus("Syncing data to cloud...");
   try {
-    const client = getSupabaseClient();
+    const db = getFirebaseDatabase();
+    if (!db) throw new Error("Firebase is not configured.");
+    const snapshot = encodeFirebaseValue(cloudStateSnapshot(state));
     const payload = {
-      app_id: getCloudAppId(),
-      state_json: state,
+      state_json: snapshot,
       updated_at: new Date().toISOString()
     };
-    const { error } = await client.from("piece_rate_app_state").upsert(payload);
-    if (error) throw error;
+    await db.ref(getCloudStatePath()).set(payload);
     lastCloudUpdatedAt = payload.updated_at;
+    hasPendingCloudChanges = false;
+    saveLocalState();
     setSyncStatus(`Connected to cloud. Last sync ${formatSyncTime(payload.updated_at)}.`);
   } catch (error) {
     console.error(error);
-    setSyncStatus("Cloud sync failed. Data is still saved in this browser.");
+    hasPendingCloudChanges = true;
+    saveLocalState();
+    setSyncStatus(`Cloud sync failed. Local changes are kept in this browser and will retry automatically. ${formatCloudError(error)}`);
   } finally {
     isSyncing = false;
   }
@@ -5252,6 +5393,11 @@ function startCloudRefresh() {
 async function refreshFromCloud() {
   if (!cloudEnabled() || isSyncing) return;
   try {
+    if (hasPendingCloudChanges) {
+      setSyncStatus("Cloud sync pending. Local changes stay on this device until upload succeeds.");
+      await syncStateToCloud();
+      if (hasPendingCloudChanges) return;
+    }
     const remote = await fetchCloudState();
     if (!remote?.state) return;
     if (!remote.updatedAt || remote.updatedAt === lastCloudUpdatedAt) return;
@@ -5265,12 +5411,13 @@ async function refreshFromCloud() {
     normalizeState();
     saveLocalState();
     lastCloudUpdatedAt = remote.updatedAt;
+    hasPendingCloudChanges = false;
     updateStorageModeUi();
     render();
     setSyncStatus(`Cloud changes received. Last sync ${formatSyncTime(remote.updatedAt)}.`);
   } catch (error) {
     console.error(error);
-    setSyncStatus("Cloud sync check failed. Working from local data until the next refresh.");
+    setSyncStatus(`Cloud sync check failed. Working from local data until the next refresh. ${formatCloudError(error)}`);
   } finally {
     isApplyingRemoteState = false;
   }
@@ -5293,6 +5440,16 @@ function setSyncStatus(message) {
   }
 }
 
+function formatCloudError(error) {
+  const message = clean(error?.message || error);
+  return message ? message.slice(0, 180) : "Unknown cloud error.";
+}
+
+function isConfiguredValue(value) {
+  const text = clean(value);
+  return Boolean(text && !/^YOUR_/i.test(text));
+}
+
 function formatSyncTime(value) {
   if (!value) return "just now";
   const date = new Date(value);
@@ -5303,8 +5460,62 @@ function saveLocalState(nextState = state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(localStateSnapshot(nextState)));
 }
 
+function cloudStateSnapshot(sourceState = state) {
+  const snapshot = localStateSnapshot(sourceState);
+  delete snapshot.__pendingCloudChanges;
+  snapshot.styleImages = buildPersistedStyleImageMap(sourceState);
+  return snapshot;
+}
+
+const FIREBASE_KEY_PREFIX = "__k__";
+
+function encodeFirebaseValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => encodeFirebaseValue(item));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entryValue]) => [
+      encodeFirebaseKey(key),
+      encodeFirebaseValue(entryValue)
+    ])
+  );
+}
+
+function decodeFirebaseValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => decodeFirebaseValue(item));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entryValue]) => [
+      decodeFirebaseKey(key),
+      decodeFirebaseValue(entryValue)
+    ])
+  );
+}
+
+function encodeFirebaseKey(key) {
+  return `${FIREBASE_KEY_PREFIX}${encodeURIComponent(String(key ?? ""))}`;
+}
+
+function decodeFirebaseKey(key) {
+  const text = String(key ?? "");
+  if (!text.startsWith(FIREBASE_KEY_PREFIX)) return text;
+  try {
+    return decodeURIComponent(text.slice(FIREBASE_KEY_PREFIX.length));
+  } catch {
+    return text;
+  }
+}
+
 function localStateSnapshot(sourceState = state) {
   const snapshot = clone(sourceState);
+  snapshot.__pendingCloudChanges = hasPendingCloudChanges;
   snapshot.styleImages = {};
   snapshot.styles = (snapshot.styles || []).map((style) => {
     if (!/^data:image\//i.test(clean(style.image))) return style;
@@ -5313,13 +5524,48 @@ function localStateSnapshot(sourceState = state) {
   return snapshot;
 }
 
+function buildPersistedStyleImageMap(sourceState = state) {
+  const imageMap = {};
+  const styles = Array.isArray(sourceState?.styles) ? sourceState.styles : [];
+  for (const style of styles) {
+    const imageValue = clean(style?.image);
+    if (!imageValue) continue;
+    const styleId = isStoredImageRef(imageValue) ? storedImageKey(imageValue) : clean(style?.id);
+    if (!styleId) continue;
+    if (/^data:image\//i.test(imageValue)) {
+      imageMap[styleId] = imageValue;
+      continue;
+    }
+    if (!isStoredImageRef(imageValue)) continue;
+    const cachedImage = clean(sourceState?.styleImages?.[styleId] || "") || styleImageCache.get(styleId) || "";
+    if (/^data:image\//i.test(cachedImage)) {
+      imageMap[styleId] = cachedImage;
+    }
+  }
+  return imageMap;
+}
+
 function loadLocalState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? { ...clone(DEFAULTS), ...JSON.parse(raw) } : clone(DEFAULTS);
+    if (!raw) {
+      hasPendingCloudChanges = false;
+      return clone(DEFAULTS);
+    }
+    const parsed = JSON.parse(raw);
+    hasPendingCloudChanges = Boolean(parsed?.__pendingCloudChanges);
+    if (parsed && typeof parsed === "object") {
+      delete parsed.__pendingCloudChanges;
+    }
+    return { ...clone(DEFAULTS), ...parsed };
   } catch {
+    hasPendingCloudChanges = false;
     return clone(DEFAULTS);
   }
+}
+
+function hasMeaningfulState(sourceState = state) {
+  return JSON.stringify(localStateSnapshot(sourceState)) !== JSON.stringify(localStateSnapshot(DEFAULTS));
 }
 
 async function loadStoredStyleImages() {
@@ -5347,17 +5593,65 @@ async function migrateInlineStyleImages() {
   let changed = false;
   for (const style of state.styles) {
     const imageValue = clean(style.image);
-    if (!/^data:image\//i.test(imageValue)) continue;
+    if (!/^data:image\//i.test(imageValue) && !(cloudEnabled() && isStoredImageRef(imageValue))) continue;
     style.image = await prepareStyleImageForState(imageValue, style.id);
     changed = true;
   }
-  if (changed) saveLocalState();
+  if (changed) {
+    if (cloudEnabled()) {
+      hasPendingCloudChanges = true;
+    }
+    saveLocalState();
+    if (cloudEnabled()) {
+      await syncStateToCloud();
+    }
+  }
 }
 
 async function prepareStyleImageForState(imageValue, styleId) {
   const value = clean(imageValue);
   if (!styleId) return value;
   state.styleImages = state.styleImages && typeof state.styleImages === "object" ? state.styleImages : {};
+  if (cloudEnabled()) {
+    if (!value) {
+      delete state.styleImages[styleId];
+      await deleteStoredStyleImage(styleId);
+      return "";
+    }
+    if (/^data:image\//i.test(value)) {
+      try {
+        const downloadUrl = await uploadStyleImageToCloud(styleId, value);
+        delete state.styleImages[styleId];
+        await deleteStoredStyleImage(styleId);
+        return downloadUrl;
+      } catch (error) {
+        console.error("Cloud style image upload failed:", error);
+        state.styleImages[styleId] = value;
+        await putStoredStyleImage(styleId, value);
+        return storedImageRef(styleId);
+      }
+    }
+    if (isStoredImageRef(value)) {
+      const cachedImage = clean(state.styleImages[styleId] || "") || styleImageCache.get(styleId) || "";
+      if (cachedImage) {
+        try {
+          const downloadUrl = await uploadStyleImageToCloud(styleId, cachedImage);
+          delete state.styleImages[styleId];
+          await deleteStoredStyleImage(styleId);
+          return downloadUrl;
+        } catch (error) {
+          console.error("Cloud style image upload failed:", error);
+          state.styleImages[styleId] = cachedImage;
+          if (!styleImageCache.has(styleId)) await putStoredStyleImage(styleId, cachedImage);
+          return value;
+        }
+      }
+      return "";
+    }
+    delete state.styleImages[styleId];
+    await deleteStoredStyleImage(styleId);
+    return value;
+  }
   if (!value) {
     delete state.styleImages[styleId];
     await deleteStoredStyleImage(styleId);
@@ -5421,6 +5715,23 @@ async function listStoredStyleImages() {
     };
     request.onerror = () => reject(request.error || new Error("Could not load style images"));
   });
+}
+
+async function uploadStyleImageToCloud(styleId, dataUrl) {
+  const storage = getFirebaseStorage();
+  if (!storage) throw new Error("Firebase Storage is not configured.");
+  const extension = inferImageExtensionFromDataUrl(dataUrl);
+  const ref = storage.ref().child(`style-images/${getCloudAppId()}/${styleId}/${Date.now()}.${extension}`);
+  const snapshot = await ref.putString(dataUrl, "data_url");
+  return snapshot.ref.getDownloadURL();
+}
+
+function inferImageExtensionFromDataUrl(dataUrl) {
+  const value = clean(dataUrl).toLowerCase();
+  if (value.startsWith("data:image/png")) return "png";
+  if (value.startsWith("data:image/webp")) return "webp";
+  if (value.startsWith("data:image/gif")) return "gif";
+  return "jpg";
 }
 
 function withStyleImageStore(mode, executor) {
