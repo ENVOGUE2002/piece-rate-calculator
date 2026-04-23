@@ -4897,117 +4897,121 @@ async function downloadBillingPdf() {
     return;
   }
 
-  const pdf = new jsPdfCtor({
-    orientation: "landscape",
-    unit: "mm",
-    format: "a4"
-  });
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const pageHeight = pdf.internal.pageSize.getHeight();
-  const left = 8;
-  const top = 10;
-  const columns = [
-    { key: "styleNumber", label: "Style", width: 24 },
-    { key: "color", label: "Color", width: 16 },
-    { key: "image", label: "Image", width: 20 },
-    { key: "orderQty", label: "Ord Qty", width: 13 },
-    { key: "cutQty", label: "Cut Qty", width: 13 },
-    { key: "producedQty", label: "Make Qty", width: 15 },
-    { key: "dispatchQty", label: "Disp Qty", width: 15 },
-    { key: "cutVsMakeSummary", label: "Cut/Make", width: 29 },
-    { key: "makeVsDispatchSummary", label: "Make/Disp", width: 29 },
-    { key: "cmtRate", label: "CMT", width: 12 },
-    { key: "baseAmount", label: "Amount", width: 18 },
-    { key: "serviceChargeAmount", label: "Service", width: 18 },
-    { key: "billing", label: "Bill Amt", width: 18 },
-    { key: "paymentStatusLabel", label: "Status", width: 15 }
-  ];
-
-  let y = top;
-  const drawHeader = () => {
-    pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(16);
-    pdf.text("ENVOGUE CLOTHING", pageWidth / 2, y, { align: "center" });
-    pdf.setFontSize(11);
-    pdf.text("Billing Report", pageWidth / 2, y + 6, { align: "center" });
-    pdf.setFont("helvetica", "normal");
-    pdf.setFontSize(9);
-    pdf.text(`Date of Reports: ${getReportRangeLabel(reportRange)}`, left, y + 12);
-    y += 18;
-
-    let currentX = left;
-    const headerHeight = 12;
-    pdf.setFillColor(245, 232, 214);
-    pdf.setDrawColor(143, 59, 32);
-    columns.forEach((column) => {
-      pdf.rect(currentX, y, column.width, headerHeight, "FD");
-      currentX += column.width;
+  try {
+    const pdf = new jsPdfCtor({
+      orientation: "landscape",
+      unit: "mm",
+      format: "a4"
     });
-    currentX = left;
-    pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(6);
-    pdf.setTextColor(43, 33, 23);
-    columns.forEach((column) => {
-      pdf.text(String(column.label), currentX + (column.width / 2), y + 7, {
-        align: "center",
-        maxWidth: column.width - 2
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const left = 8;
+    const top = 10;
+    const columns = [
+      { key: "styleNumber", label: "Style", width: 24 },
+      { key: "color", label: "Color", width: 16 },
+      { key: "image", label: "Image", width: 20 },
+      { key: "orderQty", label: "Ord Qty", width: 13 },
+      { key: "cutQty", label: "Cut Qty", width: 13 },
+      { key: "producedQty", label: "Make Qty", width: 15 },
+      { key: "dispatchQty", label: "Disp Qty", width: 15 },
+      { key: "cutVsMakeSummary", label: "Cut/Make", width: 29 },
+      { key: "makeVsDispatchSummary", label: "Make/Disp", width: 29 },
+      { key: "cmtRate", label: "CMT", width: 12 },
+      { key: "baseAmount", label: "Amount", width: 18 },
+      { key: "serviceChargeAmount", label: "Service", width: 18 },
+      { key: "billing", label: "Bill Amt", width: 18 },
+      { key: "paymentStatusLabel", label: "Status", width: 15 }
+    ];
+
+    let y = top;
+    const drawHeader = () => {
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(16);
+      pdf.text("ENVOGUE CLOTHING", pageWidth / 2, y, { align: "center" });
+      pdf.setFontSize(11);
+      pdf.text("Billing Report", pageWidth / 2, y + 6, { align: "center" });
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(9);
+      pdf.text(`Date of Reports: ${getReportRangeLabel(reportRange)}`, left, y + 12);
+      y += 18;
+
+      let currentX = left;
+      const headerHeight = 12;
+      pdf.setFillColor(245, 232, 214);
+      pdf.setDrawColor(143, 59, 32);
+      columns.forEach((column) => {
+        pdf.rect(currentX, y, column.width, headerHeight, "FD");
+        currentX += column.width;
       });
-      currentX += column.width;
-    });
-    pdf.setTextColor(0, 0, 0);
-    y += 12;
-  };
+      currentX = left;
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(6);
+      pdf.setTextColor(43, 33, 23);
+      columns.forEach((column) => {
+        pdf.text(String(column.label), currentX + (column.width / 2), y + 7, {
+          align: "center",
+          maxWidth: column.width - 2
+        });
+        currentX += column.width;
+      });
+      pdf.setTextColor(0, 0, 0);
+      y += 12;
+    };
 
-  drawHeader();
+    drawHeader();
 
-  for (const row of rows) {
-    const rowHeight = 16;
-    if (y + rowHeight > pageHeight - 18) {
+    for (const row of rows) {
+      const rowHeight = 16;
+      if (y + rowHeight > pageHeight - 18) {
+        pdf.addPage("a4", "landscape");
+        y = top;
+        drawHeader();
+      }
+      let currentX = left;
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(7);
+      for (const column of columns) {
+        pdf.rect(currentX, y, column.width, rowHeight);
+        if (column.key === "image") {
+          const imageData = await getPdfSafeImageData(row.image);
+          if (imageData) {
+            const fit = await calculateImageFit(column.width - 2, rowHeight - 2, imageData);
+            pdf.addImage(imageData, "PNG", currentX + 1 + fit.xOffset, y + 1 + fit.yOffset, fit.width, fit.height);
+          } else {
+            pdf.text("-", currentX + (column.width / 2), y + 9, { align: "center" });
+          }
+        } else {
+          const value = formatBillingPdfCell(column.key, row);
+          pdf.text(pdf.splitTextToSize(value, column.width - 2), currentX + 1, y + 4);
+        }
+        currentX += column.width;
+      }
+      y += rowHeight;
+    }
+
+    const totals = rows.reduce((sum, row) => {
+      sum.baseAmount += row.baseAmount;
+      sum.serviceChargeAmount += row.serviceChargeAmount;
+      sum.billing += row.billing;
+      return sum;
+    }, { baseAmount: 0, serviceChargeAmount: 0, billing: 0 });
+    if (y + 16 > pageHeight - 10) {
       pdf.addPage("a4", "landscape");
       y = top;
       drawHeader();
     }
-    let currentX = left;
-    pdf.setFont("helvetica", "normal");
-    pdf.setFontSize(7);
-    for (const column of columns) {
-      pdf.rect(currentX, y, column.width, rowHeight);
-      if (column.key === "image") {
-        const imageData = await imageSourceToBase64(row.image);
-        if (imageData) {
-          const imageType = imageData.startsWith("data:image/png") ? "PNG" : "JPEG";
-          const fit = await calculateImageFit(column.width - 2, rowHeight - 2, imageData);
-          pdf.addImage(imageData, imageType, currentX + 1 + fit.xOffset, y + 1 + fit.yOffset, fit.width, fit.height);
-        } else {
-          pdf.text("-", currentX + (column.width / 2), y + 9, { align: "center" });
-        }
-      } else {
-        const value = formatBillingPdfCell(column.key, row);
-        pdf.text(pdf.splitTextToSize(value, column.width - 2), currentX + 1, y + 4);
-      }
-      currentX += column.width;
-    }
-    y += rowHeight;
-  }
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(9);
+    pdf.text(`Total Amount: Rs ${fmt(totals.baseAmount)}`, left, y + 8);
+    pdf.text(`Total Service Charge: Rs ${fmt(totals.serviceChargeAmount)}`, left + 82, y + 8);
+    pdf.text(`Total Bill Amount: Rs ${fmt(totals.billing)}`, left + 180, y + 8);
 
-  const totals = rows.reduce((sum, row) => {
-    sum.baseAmount += row.baseAmount;
-    sum.serviceChargeAmount += row.serviceChargeAmount;
-    sum.billing += row.billing;
-    return sum;
-  }, { baseAmount: 0, serviceChargeAmount: 0, billing: 0 });
-  if (y + 16 > pageHeight - 10) {
-    pdf.addPage("a4", "landscape");
-    y = top;
-    drawHeader();
+    pdf.save(`billing-report-${formatReportRangeForFilename(reportRange)}.pdf`);
+  } catch (error) {
+    console.error("Billing PDF export failed:", error);
+    alert(`Billing PDF could not be created.${clean(error?.message) ? `\n${clean(error.message)}` : ""}`);
   }
-  pdf.setFont("helvetica", "bold");
-  pdf.setFontSize(9);
-  pdf.text(`Total Amount: Rs ${fmt(totals.baseAmount)}`, left, y + 8);
-  pdf.text(`Total Service Charge: Rs ${fmt(totals.serviceChargeAmount)}`, left + 82, y + 8);
-  pdf.text(`Total Bill Amount: Rs ${fmt(totals.billing)}`, left + 180, y + 8);
-
-  pdf.save(`billing-report-${formatReportRangeForFilename(reportRange)}.pdf`);
 }
 
 async function downloadCuttingReport() {
@@ -5058,12 +5062,17 @@ async function downloadInternalChallan() {
   }
   const pdf = createPdfDocumentOrAlert();
   if (!pdf) return;
-  for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index];
-    if (index > 0) pdf.addPage([148, 210], "portrait");
-    await buildInternalChallanPdfPage(pdf, row, index + 1);
+  try {
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      if (index > 0) pdf.addPage([148, 210], "portrait");
+      await buildInternalChallanPdfPage(pdf, row, index + 1);
+    }
+    pdf.save(`internal-challan-${formatReportRangeForFilename(reportDate)}.pdf`);
+  } catch (error) {
+    console.error("Internal challan PDF export failed:", error);
+    alert(`Internal challan PDF could not be created.${clean(error?.message) ? `\n${clean(error.message)}` : ""}`);
   }
-  pdf.save(`internal-challan-${formatReportRangeForFilename(reportDate)}.pdf`);
 }
 
 async function downloadFlowReport() {
@@ -5259,7 +5268,7 @@ async function drawChallanImageBox(pdf, source, x, y, width, height) {
   pdf.setFontSize(8);
   pdf.text("Image", x + 2, y + 4);
 
-  const imageData = await imageSourceToBase64(source);
+  const imageData = await getPdfSafeImageData(source);
   if (!imageData) {
     pdf.setFont("helvetica", "normal");
     pdf.setFontSize(9);
@@ -5267,10 +5276,39 @@ async function drawChallanImageBox(pdf, source, x, y, width, height) {
     return y + height;
   }
 
-  const imageType = imageData.startsWith("data:image/png") ? "PNG" : "JPEG";
   const fit = await calculateImageFit(width - 4, height - 8, imageData);
-  pdf.addImage(imageData, imageType, x + 2 + fit.xOffset, y + 6 + fit.yOffset, fit.width, fit.height);
+  pdf.addImage(imageData, "PNG", x + 2 + fit.xOffset, y + 6 + fit.yOffset, fit.width, fit.height);
   return y + height;
+}
+
+async function getPdfSafeImageData(source) {
+  const imageData = await imageSourceToBase64(source);
+  if (!imageData) return "";
+  return rasterizeImageDataForPdf(imageData);
+}
+
+function rasterizeImageDataForPdf(imageData) {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth || 1;
+        canvas.height = image.naturalHeight || 1;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve(/^data:image\/png/i.test(imageData) ? imageData : "");
+          return;
+        }
+        ctx.drawImage(image, 0, 0);
+        resolve(canvas.toDataURL("image/png"));
+      } catch {
+        resolve(/^data:image\/png/i.test(imageData) ? imageData : "");
+      }
+    };
+    image.onerror = () => resolve(/^data:image\/png/i.test(imageData) ? imageData : "");
+    image.src = imageData;
+  });
 }
 
 async function calculateImageFit(maxWidth, maxHeight, imageData) {
