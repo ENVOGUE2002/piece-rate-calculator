@@ -358,6 +358,7 @@ function bindForms() {
   els.runStyleImageDiagnostic?.addEventListener("click", runStyleImageDiagnostic);
   els.cuttingReportTable?.addEventListener("click", handleImagePreviewAction);
   els.dispatchReportTable?.addEventListener("click", handleImagePreviewAction);
+  els.styleAmountReportTable?.addEventListener("click", handleImagePreviewAction);
   els.cuttingEntriesTable.addEventListener("click", handleCuttingTableAction);
   els.styleProductionEntriesTable.addEventListener("click", handleStyleProductionTableAction);
   els.productionEntriesTable.addEventListener("click", handleProductionTableAction);
@@ -1073,6 +1074,7 @@ function renderReports() {
       <td>${esc(r.dateLabel)}</td>
       <td>${esc(r.styleNumber)}</td>
       <td>${esc(r.color || "-")}</td>
+      <td>${r.image ? `<img class="report-thumb" src="${escAttr(r.image)}" alt="${escAttr(r.styleNumber)}" data-action="preview-image" data-image-src="${escAttr(r.image)}" data-image-title="${escAttr(r.styleNumber)}">` : "-"}</td>
       <td>${fmtInt(r.orderQty)}</td>
       <td>${fmtInt(r.cutQty)}</td>
       <td>${fmtInt(r.producedQty)}</td>
@@ -1084,7 +1086,7 @@ function renderReports() {
       <td>Rs ${fmt(r.serviceChargeAmount)}</td>
       <td>Rs ${fmt(r.billing)}</td>
       <td><span class="status-chip ${r.paymentStatusClass}">${esc(r.paymentStatusLabel)}</span></td>
-    </tr>`), 14, "No style amount report for the selected date range.");
+    </tr>`), 15, "No style amount report for the selected date range.");
 
   const reconciliationSearch = clean(els.reconciliationSearch?.value).toLowerCase();
   const reconciliation = reconciliationRows(reportRange).filter((r) => matchesTextSearch([r.styleNumber, r.color], reconciliationSearch));
@@ -1829,6 +1831,10 @@ function buildStylePayload(payload) {
 }
 
 function styleImageSrc(style) {
+  return resolveReportImageSource(style);
+}
+
+function resolveStyleImageValue(style) {
   const rawValue = clean(style?.image || "");
   if (!rawValue) return "";
   if (isStoredImageRef(rawValue)) {
@@ -1836,6 +1842,33 @@ function styleImageSrc(style) {
     return clean(state.styleImages?.[styleId] || "") || styleImageCache.get(styleId) || "";
   }
   return rawValue;
+}
+
+function resolveReportImageSource(source = {}) {
+  const direct = resolveStyleImageValue(source);
+  if (direct) return direct;
+
+  const candidates = [];
+  const styleId = clean(source?.styleId || source?.id);
+  if (styleId) {
+    const linked = byId(styleId);
+    if (linked) candidates.push(linked);
+  }
+
+  const styleNumber = clean(source?.styleNumber);
+  const color = clean(source?.color).toLowerCase();
+  if (styleNumber) {
+    const matches = state.styles.filter((item) => clean(item.styleNumber).toLowerCase() === styleNumber.toLowerCase());
+    const exactColorMatch = matches.find((item) => clean(item.color).toLowerCase() === color);
+    if (exactColorMatch) candidates.push(exactColorMatch);
+    candidates.push(...matches);
+  }
+
+  for (const candidate of candidates) {
+    const value = resolveStyleImageValue(candidate);
+    if (value) return value;
+  }
+  return "";
 }
 
 function getStyleImageDiagnostics() {
@@ -5364,7 +5397,7 @@ async function imageSourceToBase64(source) {
     const blob = await response.blob();
     return await blobToDataUrl(blob);
   } catch {
-    return "";
+    return await imageUrlToDataUrl(value);
   }
 }
 
@@ -5374,6 +5407,31 @@ function blobToDataUrl(blob) {
     reader.onload = () => resolve(String(reader.result || ""));
     reader.onerror = () => reject(new Error("Could not read blob"));
     reader.readAsDataURL(blob);
+  });
+}
+
+function imageUrlToDataUrl(url) {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth || 1;
+        canvas.height = image.naturalHeight || 1;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve("");
+          return;
+        }
+        ctx.drawImage(image, 0, 0);
+        resolve(canvas.toDataURL("image/png"));
+      } catch {
+        resolve("");
+      }
+    };
+    image.onerror = () => resolve("");
+    image.src = url;
   });
 }
 
