@@ -26,6 +26,7 @@ const DEFAULTS = {
   grnStatus: {
     id: "",
     grnFileName: "",
+    pdfPageCount: 0,
     grnNumber: "",
     grnDate: "",
     supplier: "",
@@ -896,8 +897,12 @@ function renderDispatch() {
 function renderGrnStatus() {
   const grn = state.grnStatus || clone(DEFAULTS.grnStatus);
   if (els.grnStatusText) {
+    const itemCount = (grn.items || []).length;
+    const itemSummary = itemCount
+      ? ` (${fmtInt(itemCount)} items${grn.pdfPageCount ? ` across ${fmtInt(grn.pdfPageCount)} pages` : ""})`
+      : "";
     els.grnStatusText.textContent = grn.grnFileName
-      ? `Loaded GRN ${grn.grnNumber || "-"} from ${grn.grnFileName}${grn.packingListFileName ? ` and packing list ${grn.packingListFileName}` : ""}.`
+      ? `Loaded GRN ${grn.grnNumber || "-"} from ${grn.grnFileName}${itemSummary}${grn.packingListFileName ? ` and packing list ${grn.packingListFileName}` : ""}.`
       : "Upload a GRN PDF to extract the complete detail sheet.";
   }
   if (els.grnHeaderSummary) {
@@ -968,6 +973,8 @@ function buildGrnHeaderSummaryMarkup(grn) {
     <div class="grn-meta-grid">
       <div><strong>GRN No.</strong><span>${esc(grn.grnNumber || "-")}</span></div>
       <div><strong>GRN Date</strong><span>${esc(grn.grnDate || "-")}</span></div>
+      <div><strong>PDF Pages</strong><span>${esc(fmtInt(grn.pdfPageCount || 0))}</span></div>
+      <div><strong>Item Count</strong><span>${esc(fmtInt((grn.items || []).length))}</span></div>
       <div><strong>Supplier</strong><span>${esc(grn.supplier || "-")}</span></div>
       <div><strong>Vendor Code</strong><span>${esc(grn.supplierCode || "-")}</span></div>
       <div><strong>Invoice No.</strong><span>${esc(grn.vendorInvoiceNo || "-")}</span></div>
@@ -1963,7 +1970,7 @@ function formatWashcarePrintMethod(value) {
 function configurePdfJs() {
   if (!window.pdfjsLib) return;
   if (window.pdfjsLib.GlobalWorkerOptions) {
-    window.pdfjsLib.GlobalWorkerOptions.workerSrc = "";
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
   }
 }
 
@@ -2771,20 +2778,27 @@ async function importCuttingCsv(e) {
   if (!file) return;
   try {
     const rows = parseCsv(await file.text());
+    const summary = { imported: 0, skipped: 0, zeroQty: 0 };
     rows.forEach((row) => {
       const style = findStyleByNumber(row.styleNumber, row.color);
-      if (!style) return;
+      if (!style) {
+        summary.skipped += 1;
+        return;
+      }
+      const quantities = sizeQuantitiesFromRow(row);
+      if (sumObj(quantities) <= 0) summary.zeroQty += 1;
       state.cuttingEntries.push({
         id: uid(),
         date: normalizeDateValue(row.date),
         styleId: style.id,
         service: clean(row.service),
         remarks: clean(row.remarks),
-        quantities: sizeQuantitiesFromRow(row)
+        quantities
       });
+      summary.imported += 1;
     });
     await persistState();
-    alert("Cutting data imported successfully.");
+    alert(`Cutting data import finished.\nImported: ${summary.imported}\nSkipped: ${summary.skipped}\nRows with 0 qty: ${summary.zeroQty}`);
   } catch {
     alert("Could not import cutting CSV.");
   }
@@ -2825,10 +2839,15 @@ async function importStyleProductionCsv(e) {
   if (!file) return;
   try {
     const rows = parseCsv(await file.text());
+    const summary = { imported: 0, skipped: 0, zeroQty: 0 };
     rows.forEach((row) => {
       const style = findStyleByNumber(row.styleNumber, row.color);
-      if (!style) return;
+      if (!style) {
+        summary.skipped += 1;
+        return;
+      }
       const quantities = sizeQuantitiesFromRow(row);
+      if (sumObj(quantities) <= 0 && num(row.totalQty) <= 0) summary.zeroQty += 1;
       state.styleProductionEntries.push({
         id: uid(),
         date: normalizeDateValue(row.date),
@@ -2837,9 +2856,10 @@ async function importStyleProductionCsv(e) {
         remarks: clean(row.remarks),
         quantities
       });
+      summary.imported += 1;
     });
     await persistState();
-    alert("Style production data imported successfully.");
+    alert(`Style production data import finished.\nImported: ${summary.imported}\nSkipped: ${summary.skipped}\nRows with 0 qty: ${summary.zeroQty}`);
   } catch {
     alert("Could not import style production CSV.");
   }
@@ -3073,7 +3093,7 @@ async function importStyleRows(rows, importedImageMap = new Map(), options = {})
       buyerName: clean(row.buyerName) || clean(currentStyle.buyerName),
       styleName: clean(row.styleName) || clean(currentStyle.styleName),
       color,
-      orderQty: num(row.orderQty),
+      orderQty: hasImportValue(row.orderQty) ? num(row.orderQty) : (rowSizeTotal(row) || num(currentStyle.orderQty)),
       cmtRate: hasImportValue(row.cmtRate) ? num(row.cmtRate) : num(currentStyle.cmtRate),
       serviceChargePct: hasImportValue(row.serviceChargePct) ? num(row.serviceChargePct) : num(currentStyle.serviceChargePct),
       image: await prepareStyleImageForState(resolvedImage || styleImageSrc(variant) || styleImageSrc(existing) || existing?.image || "", styleId),
@@ -3393,13 +3413,53 @@ function normalizeBinaryData(value) {
 }
 
 function sizeQuantitiesFromRow(row) {
-  return Object.fromEntries(getSizes().map((size) => [size, num(row[size])]));
+  const valuesByNormalizedHeader = normalizedRowValues(row);
+  return Object.fromEntries(getSizes().map((size) => [size, num(valueForSizeHeader(valuesByNormalizedHeader, size))]));
 }
 
 function findStyleByNumber(styleNumber, color = "") {
-  const styleNumberText = clean(styleNumber).toLowerCase();
-  const colorText = clean(color).toLowerCase();
-  return state.styles.find((style) => style.styleNumber.toLowerCase() === styleNumberText && (!colorText || clean(style.color).toLowerCase() === colorText));
+  const styleNumberText = normalizeStyleLookupValue(styleNumber);
+  const colorText = normalizeStyleLookupValue(color);
+  return state.styles.find((style) => normalizeStyleLookupValue(style.styleNumber) === styleNumberText && (!colorText || normalizeStyleLookupValue(style.color) === colorText));
+}
+
+function rowSizeTotal(row = {}) {
+  const valuesByNormalizedHeader = normalizedRowValues(row);
+  return getSizes().reduce((total, size) => total + num(valueForSizeHeader(valuesByNormalizedHeader, size)), 0);
+}
+
+function normalizedRowValues(row = {}) {
+  const values = new Map();
+  Object.entries(row || {}).forEach(([key, value]) => {
+    const normalizedKey = normalizeSizeHeader(key);
+    if (normalizedKey && (!values.has(normalizedKey) || hasImportValue(value))) {
+      values.set(normalizedKey, value);
+    }
+  });
+  return values;
+}
+
+function normalizeSizeHeader(value) {
+  return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function valueForSizeHeader(valuesByNormalizedHeader, size) {
+  const candidates = sizeHeaderCandidates(size);
+  const matchedKey = candidates.find((key) => valuesByNormalizedHeader.has(key));
+  return matchedKey ? valuesByNormalizedHeader.get(matchedKey) : "";
+}
+
+function sizeHeaderCandidates(size) {
+  const text = clean(size);
+  const parts = text.split(/[\/|]/).map((part) => clean(part)).filter(Boolean);
+  return [...new Set([
+    normalizeSizeHeader(text),
+    ...parts.map((part) => normalizeSizeHeader(part))
+  ].filter(Boolean))];
+}
+
+function normalizeStyleLookupValue(value) {
+  return clean(value).toLowerCase().replace(/\s+/g, " ").replace(/[\u2010-\u2015]/g, "-").trim();
 }
 
 function handleStyleCardAction(e) {
@@ -3556,7 +3616,7 @@ async function importGrnPdf(e) {
       importedCount += 1;
     } catch (error) {
       console.error(error);
-      failures.push(file.name);
+      failures.push(`${file.name}${clean(error?.message) ? ` (${clean(error.message)})` : ""}`);
     }
   }
   await persistState();
@@ -3644,7 +3704,7 @@ async function importPackingListPdf(e) {
 }
 
 async function extractPdfPlainText(file) {
-  if (/^https?:\/\/(127\.0\.0\.1|localhost):3100/i.test(clean(window.location?.origin))) {
+  if (canUseServerPdfExtraction()) {
     try {
       return await extractPdfPlainTextViaServer(file);
     } catch (error) {
@@ -3657,22 +3717,29 @@ async function extractPdfPlainText(file) {
   const arrayBuffer = await file.arrayBuffer();
   const loadingTask = window.pdfjsLib.getDocument({
     data: arrayBuffer,
-    disableWorker: true,
     isEvalSupported: false,
     useWorkerFetch: false
   });
   const pdf = await loadingTask.promise;
-  const pages = [];
+  const pageTexts = [];
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
     const content = await page.getTextContent();
-    pages.push(content.items.map((item) => item.str).join(" "));
+    pageTexts.push(buildPdfPageText(content.items || []));
   }
-  const fullText = pages.join("\n");
+  const pages = normalizePdfPages(pageTexts);
+  const fullText = pages.map((page) => page.text).join("\n");
   return {
     fullText,
-    normalized: fullText.replace(/\s+/g, " ").trim()
+    normalized: fullText.replace(/\s+/g, " ").trim(),
+    pages
   };
+}
+
+function canUseServerPdfExtraction() {
+  const protocol = clean(window.location?.protocol);
+  if (!["http:", "https:"].includes(protocol)) return false;
+  return true;
 }
 
 async function extractPdfPlainTextViaServer(file) {
@@ -3689,16 +3756,26 @@ async function extractPdfPlainTextViaServer(file) {
   }
   const fullText = clean(data.rawText || data.text);
   const normalized = clean(data.normalizedText || data.text);
+  const pages = normalizePdfPages(
+    Array.isArray(data.rawPages) && data.rawPages.length ? data.rawPages : [fullText],
+    Array.isArray(data.normalizedPages) ? data.normalizedPages : []
+  );
   return {
     fullText,
-    normalized
+    normalized,
+    pages
   };
 }
 
 async function extractGrnReportDetails(file) {
-  const { fullText, normalized } = await extractPdfPlainText(file);
-  const items = parseGrnItems(fullText, normalized);
+  const pdfText = await extractPdfPlainText(file);
+  const { fullText, normalized } = pdfText;
+  const items = parseGrnItems(pdfText);
+  if (!items.length) {
+    throw new Error("No GRN item rows were found in the PDF.");
+  }
   return {
+    pdfPageCount: Array.isArray(pdfText.pages) ? pdfText.pages.length : 0,
     grnNumber: extractReportField(normalized, /Goods Receipt Note No\.\s*:?\s*([A-Za-z0-9/-]+)/i),
     grnDate: normalizeDateValue(extractReportField(normalized, /Goods Receipt Note No\.\s*:?\s*[A-Za-z0-9/-]+\s+Date:?\s*([0-9./-]+)/i)),
     supplier: extractReportField(normalized, /Supplier\s*:?\s*(.+?)\s+E-\d+/i) || extractReportField(normalized, /NEXTGEN FAST FASHION LIMITED\s+Supplier\s*:?\s*(.+?)\s+Code/i),
@@ -3728,11 +3805,96 @@ async function extractGrnReportDetails(file) {
   };
 }
 
-function parseGrnItems(text, normalizedText = "") {
-  const rawTableText = extractReportField(text, /S No\s+Article([\s\S]+?)Total Qty UOM wise/i) || text;
-  const normalizedTableText = extractReportField(normalizedText || text, /S No\s+Article(.+?)Total Qty UOM wise/i) || normalizedText || text;
+function buildPdfPageText(items = []) {
+  const lines = [];
+  let currentLine = [];
+  let currentY = null;
+  sortedPdfTextItems(items).forEach((item) => {
+    const text = clean(item?.str);
+    const y = Array.isArray(item?.transform) ? Number(item.transform[5]) : null;
+    const shouldBreakLine = currentLine.length
+      && currentY !== null
+      && y !== null
+      && Math.abs(y - currentY) > 2;
+    if (shouldBreakLine) {
+      lines.push(currentLine.join(" ").replace(/\s+/g, " ").trim());
+      currentLine = [];
+    }
+    if (text) currentLine.push(text);
+    if (y !== null) currentY = y;
+    if (item?.hasEOL && currentLine.length) {
+      lines.push(currentLine.join(" ").replace(/\s+/g, " ").trim());
+      currentLine = [];
+      currentY = null;
+    }
+  });
+  if (currentLine.length) {
+    lines.push(currentLine.join(" ").replace(/\s+/g, " ").trim());
+  }
+  return lines.join("\n");
+}
+
+function sortedPdfTextItems(items = []) {
+  return [...items].sort((a, b) => {
+    const ay = Array.isArray(a?.transform) ? Number(a.transform[5]) : 0;
+    const by = Array.isArray(b?.transform) ? Number(b.transform[5]) : 0;
+    if (Math.abs(by - ay) > 2) return by - ay;
+    const ax = Array.isArray(a?.transform) ? Number(a.transform[4]) : 0;
+    const bx = Array.isArray(b?.transform) ? Number(b.transform[4]) : 0;
+    return ax - bx;
+  });
+}
+
+function normalizePdfPages(rawPages = [], normalizedPages = []) {
+  return rawPages
+    .map((pageText, index) => {
+      const text = cleanPdfMultilineText(pageText);
+      const normalized = clean(normalizedPages[index] || text.replace(/\s+/g, " "));
+      return {
+        pageNumber: index + 1,
+        text,
+        normalized
+      };
+    })
+    .filter((page) => page.text);
+}
+
+function cleanPdfMultilineText(value) {
+  return String(value || "")
+    .replace(/\r/g, "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function sliceGrnTableSection(text) {
+  const source = String(text || "");
+  const start = source.search(/S No\s+Article/i);
+  if (start < 0) return source;
+  const section = source.slice(start);
+  const markerPatterns = [/Total Qty UOM wise/i, /Reason\s*:/i];
+  let end = section.length;
+  markerPatterns.forEach((pattern) => {
+    const index = section.search(pattern);
+    if (index >= 0) end = Math.min(end, index);
+  });
+  return section.slice(0, end).trim();
+}
+
+function parseGrnItems({ fullText = "", normalized = "", pages = [] } = {}) {
+  const pageItems = pages.flatMap((page) => {
+    const rawTableText = sliceGrnTableSection(page?.text);
+    const normalizedTableText = sliceGrnTableSection(page?.normalized || page?.text);
+    const lineItems = parseGrnItemsFromLines(rawTableText);
+    return lineItems.length ? lineItems : parseGrnItemsFromNormalizedText(normalizedTableText);
+  });
+  if (pageItems.length) return dedupeGrnItems(pageItems);
+  const rawTableText = sliceGrnTableSection(fullText);
   const lineItems = parseGrnItemsFromLines(rawTableText);
   if (lineItems.length) return lineItems;
+  const normalizedTableText = sliceGrnTableSection(normalized || fullText);
   return parseGrnItemsFromNormalizedText(normalizedTableText);
 }
 
