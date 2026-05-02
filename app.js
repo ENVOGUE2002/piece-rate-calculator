@@ -97,6 +97,8 @@ let pastedStyleImageDataUrl = "";
 let activeSharedSection = "";
 let pendingStyleImportFile = null;
 let styleImageCache = new Map();
+let pdfImageCache = new Map();
+let pdfImageDimensionCache = new Map();
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -1869,30 +1871,73 @@ function resolveStyleImageValue(style) {
 }
 
 function resolveReportImageSource(source = {}) {
-  const direct = resolveStyleImageValue(source);
-  if (direct) return direct;
+  const checked = new Set();
+  const queue = [];
+  const enqueue = (candidate) => {
+    if (!candidate || typeof candidate !== "object") return;
+    const key = clean(candidate.id)
+      || clean(candidate.styleId)
+      || `${clean(candidate.styleNumber)}__${clean(candidate.color)}__${clean(candidate.image)}`;
+    if (key && checked.has(key)) return;
+    if (key) checked.add(key);
+    queue.push(candidate);
+  };
 
-  const candidates = [];
+  enqueue(source);
+
   const styleId = clean(source?.styleId || source?.id);
   if (styleId) {
-    const linked = byId(styleId);
-    if (linked) candidates.push(linked);
+    enqueue(byId(styleId));
   }
 
   const styleNumber = clean(source?.styleNumber);
-  const color = clean(source?.color).toLowerCase();
+  const color = clean(source?.color || source?.styleColor).toLowerCase();
   if (styleNumber) {
     const matches = state.styles.filter((item) => clean(item.styleNumber).toLowerCase() === styleNumber.toLowerCase());
     const exactColorMatch = matches.find((item) => clean(item.color).toLowerCase() === color);
-    if (exactColorMatch) candidates.push(exactColorMatch);
-    candidates.push(...matches);
+    enqueue(exactColorMatch);
+    matches.forEach(enqueue);
   }
 
-  for (const candidate of candidates) {
+  if (!styleNumber && styleId) {
+    const linked = byId(styleId);
+    const linkedStyleNumber = clean(linked?.styleNumber);
+    if (linkedStyleNumber) {
+      state.styles
+        .filter((item) => clean(item.styleNumber).toLowerCase() === linkedStyleNumber.toLowerCase())
+        .forEach(enqueue);
+    }
+  }
+
+  for (const candidate of queue) {
     const value = resolveStyleImageValue(candidate);
     if (value) return value;
   }
   return "";
+}
+
+async function ensureStyleImageAvailableForExport(source = {}) {
+  const match = findStyleImageCacheSource(source);
+  if (match.dataUrl) return match.dataUrl;
+  const resolved = clean(resolveReportImageSource(source));
+  if (!resolved || resolved.startsWith("data:image/")) return resolved;
+  const targetStyleId = clean(match.styleId || source?.styleId || source?.id);
+  let dataUrl = "";
+  try {
+    const response = await fetch(resolved);
+    if (response.ok) {
+      dataUrl = await blobToDataUrl(await response.blob());
+    }
+  } catch {
+    dataUrl = "";
+  }
+  if (!dataUrl) {
+    dataUrl = await imageUrlToDataUrl(resolved);
+  }
+  if (targetStyleId && /^data:image\//i.test(clean(dataUrl))) {
+    await cacheStyleImageData(targetStyleId, dataUrl);
+  }
+  return clean(dataUrl);
 }
 
 function getStyleImageDiagnostics() {
@@ -1967,6 +2012,42 @@ function storedImageRef(styleId) {
 
 function storedImageKey(value) {
   return clean(value).slice(STORED_IMAGE_PREFIX.length);
+}
+
+function cachedStyleImageData(styleId) {
+  const key = clean(styleId);
+  if (!key) return "";
+  return clean(state.styleImages?.[key] || "") || styleImageCache.get(key) || "";
+}
+
+async function cacheStyleImageData(styleId, dataUrl) {
+  const key = clean(styleId);
+  const value = clean(dataUrl);
+  if (!key || !/^data:image\//i.test(value)) return;
+  state.styleImages = state.styleImages && typeof state.styleImages === "object" ? state.styleImages : {};
+  state.styleImages[key] = value;
+  if (styleImageCache.get(key) !== value) {
+    await putStoredStyleImage(key, value);
+  }
+}
+
+function findStyleImageCacheSource(source = {}) {
+  const directStyleId = clean(source?.styleId || source?.id);
+  if (directStyleId) {
+    const cached = cachedStyleImageData(directStyleId);
+    if (cached) return { styleId: directStyleId, dataUrl: cached };
+  }
+  const styleNumber = clean(source?.styleNumber);
+  const color = clean(source?.color || source?.styleColor).toLowerCase();
+  if (!styleNumber) return { styleId: directStyleId, dataUrl: "" };
+  const matches = state.styles.filter((style) => clean(style.styleNumber).toLowerCase() === styleNumber.toLowerCase());
+  const exact = matches.find((style) => clean(style.color).toLowerCase() === color);
+  const ordered = exact ? [exact, ...matches.filter((style) => style.id !== exact.id)] : matches;
+  for (const style of ordered) {
+    const cached = cachedStyleImageData(style.id);
+    if (cached) return { styleId: style.id, dataUrl: cached };
+  }
+  return { styleId: directStyleId || clean(ordered[0]?.id), dataUrl: "" };
 }
 
 function parseWashcareSymbols(value) {
@@ -2264,11 +2345,11 @@ function styleBillingRows(reportDate = "") {
   const rangePayment = getRangePaymentOverview(reportRange);
   return state.styles.map((style) => {
     const cutQty = state.cuttingEntries
-      .filter((e) => e.styleId === style.id && matchesDate(e.date, reportRange))
+      .filter((e) => e.styleId === style.id)
       .reduce((s, e) => s + sumObj(e.quantities), 0);
     const entries = state.styleProductionEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportRange));
     const producedQty = entries.reduce((s, e) => s + entryProducedQty(e), 0);
-    const dispatchQty = getStyleDispatchQty(style.id, reportRange);
+    const dispatchQty = getStyleDispatchQty(style.id);
     const baseAmount = producedQty * num(style.cmtRate);
     const serviceChargePct = num(style.serviceChargePct);
     const serviceChargeAmount = baseAmount * serviceChargePct / 100;
@@ -2295,7 +2376,7 @@ function styleBillingRows(reportDate = "") {
       paymentStatusLabel: paymentStatus.label,
       paymentStatusClass: paymentStatus.className
     };
-  }).filter((row) => row.cutQty > 0 || row.producedQty > 0 || row.dispatchQty > 0 || (!reportRange.startDate && !reportRange.endDate));
+  }).filter((row) => row.producedQty > 0);
 }
 
 function workerBillingRows() {
@@ -2571,15 +2652,23 @@ function getRangePaymentOverview(range = {}) {
   const allocationByStyleId = {};
   let remainingPayment = num(payment?.totalPaid);
   billRows.forEach((row) => {
-    let status = "Pending";
+    const billedAmount = num(row.billing);
+    const paidAmount = Math.min(Math.max(remainingPayment, 0), billedAmount);
+    let status = "Unpaid";
     if (remainingPayment >= row.billing) {
       status = "Paid";
       remainingPayment -= row.billing;
     } else if (remainingPayment > 0) {
-      status = "Part Paid";
+      status = "Partially Paid";
       remainingPayment = 0;
     }
-    allocationByStyleId[row.styleId] = status;
+    allocationByStyleId[row.styleId] = {
+      status,
+      billedAmount,
+      paidAmount,
+      balanceAmount: Math.max(billedAmount - paidAmount, 0),
+      paymentDate: clean(payment?.paymentDate)
+    };
   });
   return {
     payment,
@@ -2600,12 +2689,27 @@ function getStylePaymentStatus(styleId, paymentOverview, styleBilling = 0) {
     return { label: "No Bill", className: "pending" };
   }
   if (!paymentOverview?.payment) {
-    return { label: "Pending", className: "pending" };
+    return { label: "Unpaid", className: "pending" };
   }
-  const status = paymentOverview.allocationByStyleId?.[styleId] || "Pending";
-  if (status === "Paid") return { label: "Paid", className: "paid" };
-  if (status === "Part Paid") return { label: "Part Paid", className: "pending" };
-  return { label: "Pending", className: "pending" };
+  const allocation = paymentOverview.allocationByStyleId?.[styleId] || null;
+  const paymentDateLabel = allocation?.paymentDate ? formatDateDisplay(allocation.paymentDate) : "";
+  if (!allocation || allocation.status === "Unpaid") {
+    return { label: "Unpaid", className: "pending" };
+  }
+  if (allocation.status === "Paid") {
+    return {
+      label: paymentDateLabel ? `Paid dtd: ${paymentDateLabel}` : "Paid",
+      className: "paid"
+    };
+  }
+  if (allocation.status === "Partially Paid") {
+    const balanceText = allocation.balanceAmount > 0 ? ` | Bal: Rs ${fmt(allocation.balanceAmount)}` : "";
+    return {
+      label: paymentDateLabel ? `Partially Paid dtd: ${paymentDateLabel}${balanceText}` : `Partially Paid${balanceText}`,
+      className: "pending"
+    };
+  }
+  return { label: "Unpaid", className: "pending" };
 }
 
 function exportData() {
@@ -5389,6 +5493,29 @@ async function downloadBillingPdf() {
       { key: "billing", label: "Bill Amt", width: 18 },
       { key: "paymentStatusLabel", label: "Status", width: 15 }
     ];
+    const imageColumn = columns.find((column) => column.key === "image");
+    const rowHeight = 16;
+    const preparedImageMap = new Map();
+    if (imageColumn) {
+      const uniqueRows = [];
+      const seenImageKeys = new Set();
+      rows.forEach((row) => {
+        const key = buildPdfImageCacheKey(row);
+        if (!key || seenImageKeys.has(key)) return;
+        seenImageKeys.add(key);
+        uniqueRows.push(row);
+      });
+      const preparedEntries = await Promise.all(uniqueRows.map(async (row) => {
+        const imageData = await getPdfSafeImageData(row);
+        const fit = imageData
+          ? await calculateImageFit(imageColumn.width - 2, rowHeight - 2, imageData)
+          : null;
+        return [buildPdfImageCacheKey(row), { imageData, fit }];
+      }));
+      preparedEntries.forEach(([key, value]) => {
+        if (key) preparedImageMap.set(key, value);
+      });
+    }
 
     let y = top;
     const drawHeader = () => {
@@ -5428,7 +5555,6 @@ async function downloadBillingPdf() {
     drawHeader();
 
     for (const row of rows) {
-      const rowHeight = 16;
       if (y + rowHeight > pageHeight - 18) {
         pdf.addPage("a4", "landscape");
         y = top;
@@ -5440,9 +5566,9 @@ async function downloadBillingPdf() {
       for (const column of columns) {
         pdf.rect(currentX, y, column.width, rowHeight);
         if (column.key === "image") {
-          const imageData = await getPdfSafeImageData(row.image);
-          if (imageData) {
-            const fit = await calculateImageFit(column.width - 2, rowHeight - 2, imageData);
+          const prepared = preparedImageMap.get(buildPdfImageCacheKey(row)) || { imageData: "", fit: null };
+          if (prepared.imageData && prepared.fit) {
+            const { imageData, fit } = prepared;
             pdf.addImage(imageData, "PNG", currentX + 1 + fit.xOffset, y + 1 + fit.yOffset, fit.width, fit.height);
           } else {
             pdf.text("-", currentX + (column.width / 2), y + 9, { align: "center" });
@@ -5513,7 +5639,7 @@ async function downloadCuttingReport() {
       remarks: row.remarks || ""
     });
     excelRow.height = 62;
-    await addWorksheetImage(sheet, row.image, excelRow.number, 2);
+    await addWorksheetImage(sheet, row, excelRow.number, 2);
   }
   finalizeWorksheet(sheet);
   await downloadWorkbook(`cutting-report-${formatReportRangeForFilename(reportDate)}.xlsx`, workbook);
@@ -5575,7 +5701,7 @@ async function downloadFlowReport() {
       balance: row.balance
     });
     excelRow.height = 62;
-    await addWorksheetImage(sheet, row.image, excelRow.number, 1);
+    await addWorksheetImage(sheet, row, excelRow.number, 1);
   }
   finalizeWorksheet(sheet);
   await downloadWorkbook(`cut-make-dispatch-${formatReportRangeForFilename(reportDate)}.xlsx`, workbook);
@@ -5748,9 +5874,19 @@ async function drawChallanImageBox(pdf, source, x, y, width, height) {
 }
 
 async function getPdfSafeImageData(source) {
-  const imageData = await imageSourceToBase64(source);
-  if (!imageData) return "";
-  return rasterizeImageDataForPdf(imageData);
+  const cacheKey = buildPdfImageCacheKey(source);
+  if (cacheKey && pdfImageCache.has(cacheKey)) {
+    return pdfImageCache.get(cacheKey);
+  }
+  const pending = (async () => {
+    const imageData = await imageSourceToBase64(source);
+    if (!imageData) return "";
+    return rasterizeImageDataForPdf(imageData);
+  })();
+  if (cacheKey) pdfImageCache.set(cacheKey, pending);
+  const result = await pending;
+  if (cacheKey) pdfImageCache.set(cacheKey, Promise.resolve(result));
+  return result;
 }
 
 function rasterizeImageDataForPdf(imageData) {
@@ -5791,7 +5927,10 @@ async function calculateImageFit(maxWidth, maxHeight, imageData) {
 }
 
 function getImageDimensions(imageData) {
-  return new Promise((resolve) => {
+  if (pdfImageDimensionCache.has(imageData)) {
+    return pdfImageDimensionCache.get(imageData);
+  }
+  const pending = new Promise((resolve) => {
     const image = new Image();
     image.onload = () => resolve({
       width: image.naturalWidth || 1,
@@ -5800,6 +5939,16 @@ function getImageDimensions(imageData) {
     image.onerror = () => resolve({ width: 1, height: 1 });
     image.src = imageData;
   });
+  pdfImageDimensionCache.set(imageData, pending);
+  return pending;
+}
+
+function buildPdfImageCacheKey(source) {
+  if (typeof source === "string") return clean(source);
+  if (!source || typeof source !== "object") return "";
+  return clean(source.styleId)
+    || clean(source.id)
+    || `${clean(source.styleNumber)}__${clean(source.color || source.styleColor)}__${clean(source.image)}`;
 }
 
 function getNonZeroQuantityPairs(quantities = {}) {
@@ -5821,16 +5970,33 @@ async function addWorksheetImage(sheet, source, rowNumber, columnNumber) {
 }
 
 async function imageSourceToBase64(source) {
-  const value = clean(source);
+  const sourceObject = source && typeof source === "object" ? source : null;
+  const cacheMatch = findStyleImageCacheSource(sourceObject || {});
+  if (cacheMatch.dataUrl) return cacheMatch.dataUrl;
+  const value = typeof source === "string"
+    ? clean(source)
+    : clean(resolveReportImageSource(source || {}));
   if (!value) return "";
   if (value.startsWith("data:image/")) return value;
+  if (isStoredImageRef(value)) {
+    const styleId = storedImageKey(value);
+    return cachedStyleImageData(styleId);
+  }
+  if (sourceObject) {
+    const ensured = await ensureStyleImageAvailableForExport(sourceObject);
+    if (ensured) return ensured;
+  }
   try {
     const response = await fetch(value);
     if (!response.ok) return "";
     const blob = await response.blob();
-    return await blobToDataUrl(blob);
+    const dataUrl = await blobToDataUrl(blob);
+    await cacheStyleImageData(cacheMatch.styleId, dataUrl);
+    return dataUrl;
   } catch {
-    return await imageUrlToDataUrl(value);
+    const dataUrl = await imageUrlToDataUrl(value);
+    await cacheStyleImageData(cacheMatch.styleId, dataUrl);
+    return dataUrl;
   }
 }
 
@@ -6173,7 +6339,7 @@ function decodeFirebaseKey(key) {
 function localStateSnapshot(sourceState = state) {
   const snapshot = clone(sourceState);
   snapshot.__pendingCloudChanges = hasPendingCloudChanges;
-  snapshot.styleImages = {};
+  snapshot.styleImages = buildPersistedStyleImageMap(sourceState);
   snapshot.styles = (snapshot.styles || []).map((style) => {
     if (!/^data:image\//i.test(clean(style.image))) return style;
     return { ...style, image: storedImageRef(style.id) };
@@ -6186,14 +6352,12 @@ function buildPersistedStyleImageMap(sourceState = state) {
   const styles = Array.isArray(sourceState?.styles) ? sourceState.styles : [];
   for (const style of styles) {
     const imageValue = clean(style?.image);
-    if (!imageValue) continue;
     const styleId = isStoredImageRef(imageValue) ? storedImageKey(imageValue) : clean(style?.id);
     if (!styleId) continue;
     if (/^data:image\//i.test(imageValue)) {
       imageMap[styleId] = imageValue;
       continue;
     }
-    if (!isStoredImageRef(imageValue)) continue;
     const cachedImage = clean(sourceState?.styleImages?.[styleId] || "") || styleImageCache.get(styleId) || "";
     if (/^data:image\//i.test(cachedImage)) {
       imageMap[styleId] = cachedImage;
@@ -6276,37 +6440,31 @@ async function prepareStyleImageForState(imageValue, styleId) {
       return "";
     }
     if (/^data:image\//i.test(value)) {
+      state.styleImages[styleId] = value;
+      await putStoredStyleImage(styleId, value);
       try {
         const downloadUrl = await uploadStyleImageToCloud(styleId, value);
-        delete state.styleImages[styleId];
-        await deleteStoredStyleImage(styleId);
         return downloadUrl;
       } catch (error) {
         console.error("Cloud style image upload failed:", error);
-        state.styleImages[styleId] = value;
-        await putStoredStyleImage(styleId, value);
         return storedImageRef(styleId);
       }
     }
     if (isStoredImageRef(value)) {
       const cachedImage = clean(state.styleImages[styleId] || "") || styleImageCache.get(styleId) || "";
       if (cachedImage) {
+        state.styleImages[styleId] = cachedImage;
+        if (!styleImageCache.has(styleId)) await putStoredStyleImage(styleId, cachedImage);
         try {
           const downloadUrl = await uploadStyleImageToCloud(styleId, cachedImage);
-          delete state.styleImages[styleId];
-          await deleteStoredStyleImage(styleId);
           return downloadUrl;
         } catch (error) {
           console.error("Cloud style image upload failed:", error);
-          state.styleImages[styleId] = cachedImage;
-          if (!styleImageCache.has(styleId)) await putStoredStyleImage(styleId, cachedImage);
           return value;
         }
       }
       return "";
     }
-    delete state.styleImages[styleId];
-    await deleteStoredStyleImage(styleId);
     return value;
   }
   if (!value) {
