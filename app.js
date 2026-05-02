@@ -365,6 +365,8 @@ function bindForms() {
   els.productionEntriesTable.addEventListener("click", handleProductionTableAction);
   els.acceptanceEntriesTable.addEventListener("click", handleAcceptanceTableAction);
   els.dispatchEntriesTable.addEventListener("click", handleDispatchTableAction);
+  els.grnItemsTable?.addEventListener("change", handleGrnItemStyleInput);
+  els.grnSavedTable?.addEventListener("click", handleGrnSavedTableAction);
   els.washcareTable?.addEventListener("click", handleWashcareTableAction);
   els.sizeSettingsForm.addEventListener("submit", saveSizes);
   els.accessCodeForm?.addEventListener("submit", saveAccessCodes);
@@ -921,9 +923,22 @@ function renderGrnStatus() {
     els.grnSummaryCards.innerHTML = cards.map((card) => `<article class="stat-card"><p>${esc(card.label)}</p><strong>${esc(card.value)}</strong></article>`).join("");
   }
   if (els.grnItemsTable) {
-    const rows = (grn.items || []).map((item) => `
+    const rows = (grn.items || []).map((item, index) => {
+      const styleDetails = getGrnItemStyleDetails(item);
+      const styleValue = clean(item.styleNumber) || styleDetails.styleNumber || "";
+      const styleHint = styleDetails.styleColor || (styleDetails.style ? styleLabel(styleDetails.style) : "");
+      return `
       <tr>
         <td>${fmtInt(item.serialNo)}</td>
+        <td>
+          <input
+            type="text"
+            class="table-input"
+            data-grn-style-index="${index}"
+            value="${escAttr(styleValue)}"
+            placeholder="Enter style ID">
+          <div class="field-hint">${esc(styleHint || "Type the style ID manually.")}</div>
+        </td>
         <td>${esc(item.article || "-")}</td>
         <td>${esc(item.description || "-")}</td>
         <td>${esc(item.ean || "-")}</td>
@@ -934,8 +949,9 @@ function renderGrnStatus() {
         <td>${fmtInt(item.acceptedQty)}</td>
         <td>${fmtInt(item.shortQty)}</td>
         <td>${esc(item.reason || "-")}</td>
-      </tr>`);
-    els.grnItemsTable.innerHTML = rowsOrEmpty(rows, 11, "No GRN detail sheet available yet.");
+      </tr>`;
+    });
+    els.grnItemsTable.innerHTML = rowsOrEmpty(rows, 12, "No GRN detail sheet available yet.");
   }
   if (els.grnComparisonTable) {
     const rows = (grn.comparisonRows || []).map((row) => `
@@ -963,8 +979,9 @@ function renderGrnStatus() {
           <td>${fmtInt(report.totalAcceptedQty || 0)}</td>
           <td>${fmtInt(report.totalShortQty || 0)}</td>
           <td>${esc(formatDateTimeDisplay(report.updatedAt) || "-")}</td>
+          <td><button type="button" class="ghost small" data-action="edit-grn-report" data-entry-id="${escAttr(report.id)}">Edit</button> <button type="button" class="ghost small" data-action="delete-grn-report" data-entry-id="${escAttr(report.id)}">Delete</button></td>
         </tr>`);
-    els.grnSavedTable.innerHTML = rowsOrEmpty(rows, 8, "No saved GRN reports yet.");
+    els.grnSavedTable.innerHTML = rowsOrEmpty(rows, 9, "No saved GRN reports yet.");
   }
 }
 
@@ -2231,7 +2248,7 @@ function renderPendingWorkflow() {
   const rows = state.styles.map((style) => {
     const cutQty = state.cuttingEntries.filter((entry) => entry.styleId === style.id).reduce((sum, entry) => sum + sumObj(entry.quantities), 0);
     const makeQty = state.styleProductionEntries.filter((entry) => entry.styleId === style.id).reduce((sum, entry) => sum + entryProducedQty(entry), 0);
-    const dispatchQty = state.dispatchEntries.filter((entry) => entry.styleId === style.id).reduce((sum, entry) => sum + sumObj(entry.quantities), 0);
+    const dispatchQty = getStyleDispatchQty(style.id);
     let status = "";
     if (!cutQty) status = "Pending Cutting";
     else if (!makeQty) status = "Pending Make";
@@ -2251,9 +2268,7 @@ function styleBillingRows(reportDate = "") {
       .reduce((s, e) => s + sumObj(e.quantities), 0);
     const entries = state.styleProductionEntries.filter((e) => e.styleId === style.id && matchesDate(e.date, reportRange));
     const producedQty = entries.reduce((s, e) => s + entryProducedQty(e), 0);
-    const dispatchQty = state.dispatchEntries
-      .filter((e) => e.styleId === style.id && matchesDate(e.date, reportRange))
-      .reduce((s, e) => s + sumObj(e.quantities), 0);
+    const dispatchQty = getStyleDispatchQty(style.id, reportRange);
     const baseAmount = producedQty * num(style.cmtRate);
     const serviceChargePct = num(style.serviceChargePct);
     const serviceChargeAmount = baseAmount * serviceChargePct / 100;
@@ -2378,7 +2393,7 @@ function dashboardSummary() {
   const totalOrderQty = state.styles.reduce((sum, style) => sum + num(style.orderQty), 0);
   const totalCutQty = state.cuttingEntries.reduce((sum, entry) => sum + sumObj(entry.quantities), 0);
   const totalMakeQty = state.styleProductionEntries.reduce((sum, entry) => sum + entryProducedQty(entry), 0);
-  const totalDispatchQty = state.dispatchEntries.reduce((sum, entry) => sum + sumObj(entry.quantities), 0);
+  const totalDispatchQty = state.styles.reduce((sum, style) => sum + getStyleDispatchQty(style.id), 0);
   const totalBilled = styleBillingRows().reduce((sum, row) => sum + row.billing, 0);
   const totalPaid = state.payments.reduce((sum, payment) => sum + num(payment.totalPaid), 0);
   const totalServiceChargePaid = state.payments.reduce((sum, payment) => sum + num(payment.serviceChargePaid), 0);
@@ -3553,6 +3568,13 @@ function handleDispatchTableAction(e) {
   if (button.dataset.action === "delete-dispatch") void deleteEntry("dispatchEntries", button.dataset.entryId, "dispatch entry");
 }
 
+function handleGrnSavedTableAction(e) {
+  const button = e.target.closest("[data-action]");
+  if (!button) return;
+  if (button.dataset.action === "edit-grn-report") editGrnReport(button.dataset.entryId);
+  if (button.dataset.action === "delete-grn-report") void deleteGrnReport(button.dataset.entryId);
+}
+
 function handlePaymentTableAction(e) {
   const button = e.target.closest("[data-action='delete-payment']");
   if (!button) return;
@@ -3573,6 +3595,32 @@ async function deleteEntry(collectionName, entryId, label) {
   const confirmed = window.confirm(`Delete this ${label}?`);
   if (!confirmed) return;
   state[collectionName] = state[collectionName].filter((item) => item.id !== entryId);
+  await persistState();
+}
+
+function editGrnReport(entryId) {
+  const report = (state.grnReports || []).find((item) => item.id === entryId);
+  if (!report) return;
+  state.grnStatus = {
+    ...clone(DEFAULTS.grnStatus),
+    ...report
+  };
+  render();
+  els.grnHeaderSummary?.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (els.grnStatusText) {
+    els.grnStatusText.textContent = `Loaded saved GRN ${report.grnNumber || "-"} for editing. Invoice: ${report.vendorInvoiceNo || "-"}.`;
+  }
+}
+
+async function deleteGrnReport(entryId) {
+  const report = (state.grnReports || []).find((item) => item.id === entryId);
+  if (!report) return;
+  const confirmed = window.confirm(`Delete saved GRN report ${report.grnNumber || report.vendorInvoiceNo || ""}?`);
+  if (!confirmed) return;
+  state.grnReports = (state.grnReports || []).filter((item) => item.id !== entryId);
+  if (clean(state.grnStatus?.id) === entryId) {
+    state.grnStatus = clone(DEFAULTS.grnStatus);
+  }
   await persistState();
 }
 
@@ -3598,6 +3646,7 @@ async function importGrnPdf(e) {
   if (!files.length) return;
   let importedCount = 0;
   const failures = [];
+  let lastImportedReport = null;
   for (const file of files) {
     if (els.grnStatusText) {
       els.grnStatusText.textContent = `Reading GRN PDF: ${file.name}`;
@@ -3613,6 +3662,7 @@ async function importGrnPdf(e) {
       };
       state.grnStatus = report;
       upsertGrnReport(report);
+      lastImportedReport = report;
       importedCount += 1;
     } catch (error) {
       console.error(error);
@@ -3623,12 +3673,14 @@ async function importGrnPdf(e) {
   if (els.grnStatusText) {
     if (importedCount && !failures.length) {
       els.grnStatusText.textContent = importedCount === 1
-        ? `Loaded and saved 1 GRN report.`
+        ? `Loaded and saved 1 GRN report. Invoice: ${lastImportedReport?.vendorInvoiceNo || "-"}.`
         : `Loaded and saved ${importedCount} GRN reports.`;
     } else if (importedCount && failures.length) {
       els.grnStatusText.textContent = `Saved ${importedCount} GRN reports. Failed to read: ${failures.join(", ")}.`;
     } else {
-      els.grnStatusText.textContent = "Could not read the selected GRN PDF files automatically. Please try the launcher file and upload again.";
+      els.grnStatusText.textContent = failures.length
+        ? `Could not read the selected GRN PDF files automatically: ${failures.join(", ")}.`
+        : "Could not read the selected GRN PDF files automatically. Please try the launcher file and upload again.";
     }
   }
   if (!importedCount) {
@@ -3691,11 +3743,22 @@ async function importPackingListPdf(e) {
       comparisonRows,
       updatedAt: new Date().toISOString()
     };
+    upsertGrnReport({
+      ...clone(DEFAULTS.grnStatus),
+      ...state.grnStatus
+    });
     await persistState();
+    if (els.grnStatusText) {
+      const totalShortage = comparisonRows.reduce((sum, row) => sum + num(row.shortageQty), 0);
+      els.grnStatusText.textContent = `Packing list ${file.name} matched with GRN ${state.grnStatus.grnNumber || "-"}. Total shortage: ${fmtInt(totalShortage)}.`;
+    }
   } catch (error) {
     console.error(error);
     if (els.grnStatusText) {
-      els.grnStatusText.textContent = "Could not read the packing list file automatically. We can refine this once you share one sample packing list.";
+      const detail = clean(error?.message);
+      els.grnStatusText.textContent = detail
+        ? `Could not read the packing list file automatically: ${detail}`
+        : "Could not read the packing list file automatically. We can refine this once you share one sample packing list.";
     }
     alert("Could not read the selected packing list file.");
   } finally {
@@ -3900,53 +3963,118 @@ function parseGrnItems({ fullText = "", normalized = "", pages = [] } = {}) {
 
 function parseGrnItemsFromLines(text) {
   const items = [];
-  const pattern = /^\s*(\d+)\s+(\d{6,})\s+(.+?)\s+(\d{8,14})\s+(?:(\S+)\s+)?(EA|PCS|PC|NOS)\s+(\d+)\s+(\d+)\s+(\d+)(?:\s+(\d+))?(?:\s+(.+?))?\s*$/i;
   const lines = String(text || "")
     .split(/\r?\n/)
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter(Boolean);
-  for (const line of lines) {
-    const match = line.match(pattern);
-    if (!match) continue;
-    const [, serialNo, article, description, ean, vendorArticleNo, uom, challanQty, receivedQty, acceptedQty, shortQty, reason] = match;
-    items.push(createGrnItem({
-      serialNo,
-      article,
-      description,
-      ean,
-      vendorArticleNo,
-      uom,
-      challanQty,
-      receivedQty,
-      acceptedQty,
-      shortQty,
-      reason
-    }));
+  const blocks = [];
+  let currentBlock = "";
+  lines.forEach((line) => {
+    if (!/\d/.test(line)) return;
+    const startsNewItem = /^\d+\s+/.test(line);
+    if (startsNewItem) {
+      if (currentBlock) blocks.push(currentBlock);
+      currentBlock = line;
+      return;
+    }
+    if (currentBlock) currentBlock = `${currentBlock} ${line}`.trim();
+  });
+  if (currentBlock) blocks.push(currentBlock);
+
+  for (const block of blocks) {
+    const parsed = parseGrnItemBlock(block);
+    if (!parsed) continue;
+    items.push(createGrnItem(parsed));
   }
   return dedupeGrnItems(items);
 }
 
 function parseGrnItemsFromNormalizedText(text) {
-  const pattern = /(\d+)\s+(\d{6,})\s+(.+?)\s+(\d{8,14})\s+(?:(\S+)\s+)?(EA|PCS|PC|NOS)\s+(\d+)\s+(\d+)\s+(\d+)(?:\s+(\d+))?(?:\s+([A-Za-z][A-Za-z.\s]+?))?(?=\s+\d+\s+\d{6,}|\s*$)/gi;
   const items = [];
-  let match;
-  while ((match = pattern.exec(text))) {
-    const [, serialNo, article, description, ean, vendorArticleNo, uom, challanQty, receivedQty, acceptedQty, shortQty, reason] = match;
-    items.push(createGrnItem({
-      serialNo,
-      article,
-      description,
-      ean,
-      vendorArticleNo,
-      uom,
-      challanQty,
-      receivedQty,
-      acceptedQty,
-      shortQty,
-      reason
-    }));
+  const normalizedText = String(text || "").replace(/\s+/g, " ").trim();
+  const blockPattern = /(\d+\s+[A-Za-z0-9/-]+.*?)(?=\s+\d+\s+[A-Za-z0-9/-]+(?:\s+[A-Za-z])|\s*$)/g;
+  const blocks = normalizedText.match(blockPattern) || [];
+  for (const block of blocks) {
+    const parsed = parseGrnItemBlock(block);
+    if (!parsed) continue;
+    items.push(createGrnItem(parsed));
   }
   return dedupeGrnItems(items);
+}
+
+function parseGrnItemBlock(text) {
+  const cleaned = String(text || "").replace(/\s+/g, " ").trim();
+  if (!cleaned || !/^\d+\s+/.test(cleaned)) return null;
+  const tokens = cleaned.split(" ");
+  if (tokens.length < 6) return null;
+
+  const serialNo = tokens[0];
+  const article = tokens[1];
+  if (!/^\d+$/.test(serialNo) || !/[A-Za-z0-9]/.test(article)) return null;
+
+  const uomIndex = findGrnUomIndex(tokens);
+  if (uomIndex < 0) return null;
+
+  const quantityTokens = tokens.slice(uomIndex + 1).filter(Boolean);
+  const numericTokens = [];
+  let reasonStartIndex = -1;
+  for (let index = 0; index < quantityTokens.length; index += 1) {
+    const value = quantityTokens[index];
+    if (/^\d+(?:\.\d+)?$/.test(value)) {
+      numericTokens.push(value);
+      continue;
+    }
+    reasonStartIndex = index;
+    break;
+  }
+  if (numericTokens.length < 3) return null;
+
+  const [challanQty, receivedQty, acceptedQty, shortQty = "0"] = numericTokens;
+  const reason = reasonStartIndex >= 0 ? quantityTokens.slice(reasonStartIndex).join(" ") : "";
+
+  const details = tokens.slice(2, uomIndex);
+  let ean = "";
+  let vendorArticleNo = "";
+  let descriptionTokens = details;
+
+  const eanIndex = details.findIndex((token) => /^\d{8,14}$/.test(token));
+  if (eanIndex >= 0) {
+    ean = details[eanIndex];
+    descriptionTokens = details.slice(0, eanIndex);
+    if (details[eanIndex + 1] && !/^\d+$/.test(details[eanIndex + 1])) {
+      vendorArticleNo = details[eanIndex + 1];
+    }
+  } else if (details.length > 1 && /^[A-Za-z0-9/-]+$/.test(details[details.length - 1])) {
+    vendorArticleNo = details[details.length - 1];
+    descriptionTokens = details.slice(0, -1);
+  }
+
+  return {
+    serialNo,
+    article,
+    description: descriptionTokens.join(" "),
+    ean,
+    vendorArticleNo,
+    uom: tokens[uomIndex],
+    challanQty,
+    receivedQty,
+    acceptedQty,
+    shortQty,
+    reason
+  };
+}
+
+function findGrnUomIndex(tokens = []) {
+  const allowedUoms = new Set(["EA", "PCS", "PC", "NOS", "SET", "BOX", "PAIR", "PKT", "CTN"]);
+  for (let index = tokens.length - 4; index >= 2; index -= 1) {
+    const token = clean(tokens[index]).toUpperCase();
+    if (!allowedUoms.has(token)) continue;
+    const nextTokens = tokens.slice(index + 1, index + 5);
+    if (nextTokens.filter((value) => /^\d+(?:\.\d+)?$/.test(value)).length >= 3) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function createGrnItem({
@@ -4171,6 +4299,131 @@ function buildItemMatchKey(item = {}) {
   return normalizeKey(item.article) || normalizeKey(item.ean) || normalizeKey(item.vendorArticleNo) || normalizeKey(item.description);
 }
 
+function getAvailableGrnReports() {
+  return (state.grnReports || []).length
+    ? state.grnReports
+    : ((state.grnStatus?.items || []).length ? [state.grnStatus] : []);
+}
+
+function handleGrnItemStyleInput(e) {
+  const input = e.target.closest("[data-grn-style-index]");
+  if (!input) return;
+  const itemIndex = Number.parseInt(input.dataset.grnStyleIndex || "-1", 10);
+  if (!Number.isFinite(itemIndex) || itemIndex < 0) return;
+  void saveGrnItemStyleAssignment(itemIndex, input.value);
+}
+
+async function saveGrnItemStyleAssignment(itemIndex, styleNumberValue) {
+  const items = Array.isArray(state.grnStatus?.items) ? state.grnStatus.items : [];
+  const item = items[itemIndex];
+  if (!item) return;
+  const typedStyleNumber = clean(styleNumberValue);
+  const matchedStyles = typedStyleNumber
+    ? state.styles.filter((style) => normalizeStyleLookupValue(style.styleNumber) === normalizeStyleLookupValue(typedStyleNumber))
+    : [];
+  const matchedStyle = chooseGrnStyleMatch(matchedStyles, item);
+  item.styleNumber = typedStyleNumber;
+  item.styleId = matchedStyle?.id || "";
+  item.styleColor = matchedStyle?.color || "";
+  state.grnStatus.updatedAt = new Date().toISOString();
+  upsertGrnReport({
+    ...clone(DEFAULTS.grnStatus),
+    ...state.grnStatus
+  });
+  await persistState();
+}
+
+function findStyleForGrnItem(item = {}) {
+  const savedStyleId = clean(item.styleId);
+  if (savedStyleId) {
+    const savedStyle = byId(savedStyleId);
+    if (savedStyle) return savedStyle;
+  }
+  const savedStyleNumber = clean(item.styleNumber);
+  const savedStyleColor = clean(item.styleColor);
+  if (savedStyleNumber) {
+    const direct = findStyleByNumber(savedStyleNumber, savedStyleColor);
+    if (direct) return direct;
+  }
+
+  const exactKeys = new Set([
+    normalizeStyleLookupValue(item.article),
+    normalizeStyleLookupValue(item.vendorArticleNo),
+    normalizeStyleLookupValue(item.ean),
+    normalizeStyleLookupValue(savedStyleNumber)
+  ].filter(Boolean));
+  if (exactKeys.size) {
+    const exactMatches = state.styles.filter((style) => exactKeys.has(normalizeStyleLookupValue(style.styleNumber)));
+    const exactChoice = chooseGrnStyleMatch(exactMatches, item);
+    if (exactChoice) return exactChoice;
+  }
+
+  const textHaystack = normalizeStyleSearch([
+    item.description,
+    item.vendorArticleNo,
+    item.article,
+    item.ean,
+    savedStyleNumber
+  ].join(" "));
+  if (!textHaystack) return null;
+  const partialMatches = state.styles.filter((style) => {
+    const styleKey = normalizeStyleSearch(style.styleNumber);
+    return styleKey && textHaystack.includes(styleKey);
+  });
+  return chooseGrnStyleMatch(partialMatches, item);
+}
+
+function chooseGrnStyleMatch(styles = [], item = {}) {
+  if (!styles.length) return null;
+  if (styles.length === 1) return styles[0];
+  const itemText = normalizeStyleLookupValue([
+    item.description,
+    item.reason,
+    item.styleColor
+  ].join(" "));
+  const colorMatches = styles.filter((style) => {
+    const colorKey = normalizeStyleLookupValue(style.color);
+    return colorKey && itemText.includes(colorKey);
+  });
+  if (colorMatches.length === 1) return colorMatches[0];
+  return styles
+    .slice()
+    .sort((a, b) => styleLabel(a).localeCompare(styleLabel(b)))[0];
+}
+
+function getGrnItemStyleDetails(item = {}) {
+  const style = findStyleForGrnItem(item);
+  return {
+    style,
+    styleId: style?.id || clean(item.styleId),
+    styleNumber: style?.styleNumber || clean(item.styleNumber),
+    styleColor: style?.color || clean(item.styleColor),
+    image: style ? styleImageSrc(style) : ""
+  };
+}
+
+function getStyleDispatchQty(styleId, reportDate = "") {
+  const reportRange = typeof reportDate === "string" || !reportDate ? normalizeReportRangeInput(reportDate) : reportDate;
+  const manualQty = state.dispatchEntries
+    .filter((entry) => entry.styleId === styleId && matchesDate(entry.date, reportRange))
+    .reduce((sum, entry) => sum + sumObj(entry.quantities), 0);
+  if (manualQty > 0) return manualQty;
+  return getGrnAcceptedQtyForStyle(styleId, reportRange);
+}
+
+function getGrnAcceptedQtyForStyle(styleId, reportDate = "") {
+  const reportRange = typeof reportDate === "string" || !reportDate ? normalizeReportRangeInput(reportDate) : reportDate;
+  return getAvailableGrnReports()
+    .filter((report) => {
+      if (!reportRange?.startDate && !reportRange?.endDate) return true;
+      return matchesDate(report.grnDate, reportRange);
+    })
+    .reduce((sum, report) => sum + (report.items || []).reduce((itemSum, item) => {
+      const details = getGrnItemStyleDetails(item);
+      return itemSum + (details.styleId === styleId ? num(item.acceptedQty) : 0);
+    }, 0), 0);
+}
+
 async function downloadGrnSheetWorkbook() {
   const grn = state.grnStatus || {};
   if (!(grn.items || []).length) {
@@ -4185,6 +4438,9 @@ async function downloadGrnSheetWorkbook() {
     { header: "GRN Date", key: "grnDate", width: 14 },
     { header: "Invoice No", key: "vendorInvoiceNo", width: 18 },
     { header: "PO No", key: "poNumber", width: 16 },
+    { header: "Style Number", key: "styleNumber", width: 18 },
+    { header: "Style Color", key: "styleColor", width: 16 },
+    { header: "Image", key: "image", width: 12 },
     { header: "Article", key: "article", width: 16 },
     { header: "Description", key: "description", width: 38 },
     { header: "EAN", key: "ean", width: 18 },
@@ -4197,12 +4453,16 @@ async function downloadGrnSheetWorkbook() {
     { header: "Reason", key: "reason", width: 16 }
   ];
   styleWorksheetHeader(sheet);
-  grn.items.forEach((item) => {
-    sheet.addRow({
+  for (const item of (grn.items || [])) {
+    const styleDetails = getGrnItemStyleDetails(item);
+    const row = sheet.addRow({
       grnNumber: grn.grnNumber,
       grnDate: grn.grnDate,
       vendorInvoiceNo: grn.vendorInvoiceNo,
       poNumber: grn.poNumber,
+      styleNumber: styleDetails.styleNumber,
+      styleColor: styleDetails.styleColor,
+      image: styleDetails.image ? "Image attached" : "",
       article: item.article,
       description: item.description,
       ean: item.ean,
@@ -4214,7 +4474,9 @@ async function downloadGrnSheetWorkbook() {
       shortQty: item.shortQty,
       reason: item.reason
     });
-  });
+    row.height = 44;
+    await addWorksheetImage(sheet, styleDetails.image, row.number, 7);
+  }
   if ((grn.comparisonRows || []).length) {
     const compare = workbook.addWorksheet("Shortage Compare");
     compare.columns = [
@@ -4231,9 +4493,7 @@ async function downloadGrnSheetWorkbook() {
 }
 
 async function downloadAllGrnWorkbook() {
-  const reports = (state.grnReports || []).length
-    ? state.grnReports
-    : ((state.grnStatus?.items || []).length ? [state.grnStatus] : []);
+  const reports = getAvailableGrnReports();
   if (!reports.length) {
     alert("No saved GRN reports available to export.");
     return;
@@ -4274,6 +4534,9 @@ async function downloadAllGrnWorkbook() {
   detail.columns = [
     { header: "GRN No", key: "grnNumber", width: 16 },
     { header: "Invoice No", key: "vendorInvoiceNo", width: 18 },
+    { header: "Style Number", key: "styleNumber", width: 18 },
+    { header: "Style Color", key: "styleColor", width: 16 },
+    { header: "Image", key: "image", width: 12 },
     { header: "Article", key: "article", width: 16 },
     { header: "Description", key: "description", width: 38 },
     { header: "EAN", key: "ean", width: 18 },
@@ -4286,22 +4549,30 @@ async function downloadAllGrnWorkbook() {
     { header: "Reason", key: "reason", width: 16 }
   ];
   styleWorksheetHeader(detail);
-  reports.forEach((report) => {
-    (report.items || []).forEach((item) => detail.addRow({
-      grnNumber: report.grnNumber,
-      vendorInvoiceNo: report.vendorInvoiceNo,
-      article: item.article,
-      description: item.description,
-      ean: item.ean,
-      vendorArticleNo: item.vendorArticleNo,
-      uom: item.uom,
-      challanQty: item.challanQty,
-      receivedQty: item.receivedQty,
-      acceptedQty: item.acceptedQty,
-      shortQty: item.shortQty,
-      reason: item.reason
-    }));
-  });
+  for (const report of reports) {
+    for (const item of (report.items || [])) {
+      const styleDetails = getGrnItemStyleDetails(item);
+      const row = detail.addRow({
+        grnNumber: report.grnNumber,
+        vendorInvoiceNo: report.vendorInvoiceNo,
+        styleNumber: styleDetails.styleNumber,
+        styleColor: styleDetails.styleColor,
+        image: styleDetails.image ? "Image attached" : "",
+        article: item.article,
+        description: item.description,
+        ean: item.ean,
+        vendorArticleNo: item.vendorArticleNo,
+        uom: item.uom,
+        challanQty: item.challanQty,
+        receivedQty: item.receivedQty,
+        acceptedQty: item.acceptedQty,
+        shortQty: item.shortQty,
+        reason: item.reason
+      });
+      row.height = 44;
+      await addWorksheetImage(detail, styleDetails.image, row.number, 5);
+    }
+  }
 
   const compareRows = reports.flatMap((report) => (report.comparisonRows || []).map((row) => ({
     grnNumber: report.grnNumber,
