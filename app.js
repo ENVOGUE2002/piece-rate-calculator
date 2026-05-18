@@ -2,6 +2,9 @@
 const STORAGE_KEY = "piece-rate-calculator-v1";
 const STYLE_IMAGE_DB_NAME = "piece-rate-calculator-images";
 const STYLE_IMAGE_STORE = "style-images";
+const APP_STATE_STORE = "app-state";
+const APP_STATE_RECORD_ID = "main";
+const STORAGE_DB_VERSION = 2;
 const STORED_IMAGE_PREFIX = "stored-image:";
 const DEFAULT_SIZE_LIST = ["XS", "S", "M", "L", "XL", "XXL"];
 const DEFAULT_WASHCARE_TEMPLATE_PATH = "C:\\Users\\Lenovo\\Downloads\\SHEIN WASHCARE.btw";
@@ -218,6 +221,7 @@ const els = {
   tallyBucketHead: $("tallyBucketHead"),
   tallyCurrentBucketHead: $("tallyCurrentBucketHead"),
   exportBtn: $("exportBtn"),
+  clearOldCacheBtn: $("clearOldCacheBtn"),
   importInput: $("importInput"),
   styleImportInput: $("styleImportInput"),
   styleImageRecoveryInput: $("styleImageRecoveryInput"),
@@ -434,6 +438,7 @@ function bindForms() {
   els.tallyCompany?.addEventListener("change", saveTallyPreferences);
   els.tallyCreditorsTable?.addEventListener("click", handleTallyCreditorTableClick);
   els.exportBtn.addEventListener("click", exportData);
+  els.clearOldCacheBtn?.addEventListener("click", clearOldBrowserCache);
   els.importInput.addEventListener("change", importData);
   els.styleImportInput.addEventListener("change", importStylesCsv);
   els.styleImageRecoveryInput?.addEventListener("change", importStyleImageSheet);
@@ -2720,6 +2725,33 @@ function exportData() {
   a.download = `piece-rate-data-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+async function clearOldBrowserCache() {
+  const confirmed = window.confirm("Clear old browser cache on this device? Current data will stay open, cloud data will stay unchanged, and a fresh local backup will be created.");
+  if (!confirmed) return;
+  try {
+    const referencedStyleIds = new Set([
+      ...Object.keys(state.styleImages || {}),
+      ...(Array.isArray(state.styles) ? state.styles.map((style) => clean(style?.id)).filter(Boolean) : [])
+    ]);
+    const storedImages = await listStoredStyleImages();
+    let removedImages = 0;
+    for (const [styleId] of storedImages) {
+      if (referencedStyleIds.has(styleId)) continue;
+      await deleteStoredStyleImage(styleId);
+      removedImages += 1;
+    }
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {}
+    await removeStoredAppState();
+    await saveLocalState();
+    setSyncStatus(`Old browser cache cleared on this device. Removed ${fmtInt(removedImages)} unused image cache item${removedImages === 1 ? "" : "s"}.`);
+  } catch (error) {
+    console.error("Could not clear old browser cache:", error);
+    alert(`Could not clear old browser cache.${clean(error?.message) ? `\n${clean(error.message)}` : ""}`);
+  }
 }
 
 function importData(e) {
@@ -6063,7 +6095,7 @@ async function persistState() {
   if (cloudEnabled()) {
     hasPendingCloudChanges = true;
   }
-  saveLocalState();
+  await saveLocalState();
   updateStorageModeUi();
   render();
   if (cloudEnabled()) {
@@ -6072,7 +6104,7 @@ async function persistState() {
 }
 
 async function loadInitialState() {
-  const localState = loadLocalState();
+  const localState = await loadLocalState();
   if (!cloudEnabled()) {
     setSyncStatus("Cloud sync is not configured yet.");
     return localState;
@@ -6087,7 +6119,7 @@ async function loadInitialState() {
     }
     if (remote?.state) {
       lastCloudUpdatedAt = clean(remote.updatedAt);
-      saveLocalState(remote.state);
+      await saveLocalState(remote.state);
       hasPendingCloudChanges = false;
       setSyncStatus(`Connected to cloud. Last sync ${formatSyncTime(remote.updatedAt)}.`);
       return remote.state;
@@ -6193,12 +6225,12 @@ async function syncStateToCloud() {
     await db.ref(getCloudStatePath()).set(payload);
     lastCloudUpdatedAt = payload.updated_at;
     hasPendingCloudChanges = false;
-    saveLocalState();
+    await saveLocalState();
     setSyncStatus(`Connected to cloud. Last sync ${formatSyncTime(payload.updated_at)}.`);
   } catch (error) {
     console.error(error);
     hasPendingCloudChanges = true;
-    saveLocalState();
+    await saveLocalState();
     setSyncStatus(`Cloud sync failed. Local changes are kept in this browser and will retry automatically. ${formatCloudError(error)}`);
   } finally {
     isSyncing = false;
@@ -6232,7 +6264,7 @@ async function refreshFromCloud() {
     isApplyingRemoteState = true;
     state = { ...clone(DEFAULTS), ...remote.state };
     normalizeState();
-    saveLocalState();
+    await saveLocalState();
     lastCloudUpdatedAt = remote.updatedAt;
     hasPendingCloudChanges = false;
     updateStorageModeUi();
@@ -6279,15 +6311,95 @@ function formatSyncTime(value) {
   return Number.isNaN(date.getTime()) ? "just now" : date.toLocaleString("en-IN");
 }
 
-function saveLocalState(nextState = state) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(localStateSnapshot(nextState)));
+async function saveLocalState(nextState = state) {
+  const primarySnapshot = localStateSnapshot(nextState);
+  const fallbackSnapshots = [
+    { snapshot: primarySnapshot, message: "" },
+    {
+      snapshot: compactLocalStateSnapshot(primarySnapshot),
+      message: "Local backup was compacted for this browser. Saved records and images stay intact, but large sync caches were skipped locally."
+    },
+    {
+      snapshot: emergencyLocalStateSnapshot(primarySnapshot),
+      message: "Local backup was trimmed for this browser because local storage is full. Cloud sync still uses the complete dataset."
+    }
+  ];
+  let lastQuotaError = null;
+  for (const attempt of fallbackSnapshots) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(attempt.snapshot));
+      try {
+        await putStoredAppState(attempt.snapshot);
+      } catch (storageError) {
+        console.warn("Extended browser backup could not be updated:", storageError);
+      }
+      if (attempt.message) setSyncStatus(attempt.message);
+      return;
+    } catch (error) {
+      if (!isQuotaExceededError(error)) throw error;
+      lastQuotaError = error;
+    }
+  }
+  await putStoredAppState(fallbackSnapshots[fallbackSnapshots.length - 1].snapshot);
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {}
+  setSyncStatus("Local backup moved to extended browser storage for this device because localStorage is full. Cloud sync will continue.");
+  if (lastQuotaError) {
+    console.warn("Local storage quota exceeded; using IndexedDB backup instead.", lastQuotaError);
+  }
+}
+
+function isQuotaExceededError(error) {
+  return error?.name === "QuotaExceededError"
+    || error?.name === "NS_ERROR_DOM_QUOTA_REACHED"
+    || error?.code === 22
+    || error?.code === 1014;
+}
+
+function compactLocalStateSnapshot(snapshot) {
+  const compacted = clone(snapshot);
+  compacted.tallyCreditors = compactTallyCreditorsSnapshot(compacted.tallyCreditors, { includeVoucherData: false });
+  return compacted;
+}
+
+function emergencyLocalStateSnapshot(snapshot) {
+  const compacted = compactLocalStateSnapshot(snapshot);
+  compacted.grnStatus = {
+    ...clone(DEFAULTS.grnStatus),
+    ...(compacted.grnStatus || {}),
+    items: [],
+    packingItems: [],
+    comparisonRows: [],
+    packingListRawText: ""
+  };
+  compacted.grnReports = [];
+  return compacted;
+}
+
+function compactGrnReportSnapshot(report) {
+  if (!report || typeof report !== "object") return report;
+  const compacted = { ...report };
+  delete compacted.rawText;
+  compacted.packingListRawText = "";
+  return compacted;
 }
 
 function cloudStateSnapshot(sourceState = state) {
-  const snapshot = localStateSnapshot(sourceState);
+  const snapshot = localStateSnapshot(sourceState, { includeStyleImages: false, includeTallyData: true });
+  snapshot.styles = (Array.isArray(snapshot.styles) ? snapshot.styles : []).map((style) => ({
+    ...style,
+    image: cloudStyleImageValue(style)
+  }));
   delete snapshot.__pendingCloudChanges;
-  snapshot.styleImages = buildPersistedStyleImageMap(sourceState);
   return snapshot;
+}
+
+function cloudStyleImageValue(style) {
+  const value = clean(style?.image);
+  if (!value) return "";
+  if (/^(https?:)?\/\//i.test(value)) return value;
+  return "";
 }
 
 const FIREBASE_KEY_PREFIX = "__k__";
@@ -6336,14 +6448,32 @@ function decodeFirebaseKey(key) {
   }
 }
 
-function localStateSnapshot(sourceState = state) {
+function localStateSnapshot(sourceState = state, options = {}) {
+  const includeStyleImages = Boolean(options.includeStyleImages);
+  const includeTallyData = options.includeTallyData ?? !cloudEnabled();
   const snapshot = clone(sourceState);
   snapshot.__pendingCloudChanges = hasPendingCloudChanges;
-  snapshot.styleImages = buildPersistedStyleImageMap(sourceState);
+  snapshot.grnStatus = compactGrnReportSnapshot(snapshot.grnStatus);
+  snapshot.grnReports = Array.isArray(snapshot.grnReports)
+    ? snapshot.grnReports.map((report) => compactGrnReportSnapshot(report))
+    : [];
+  snapshot.tallyCreditors = compactTallyCreditorsSnapshot(snapshot.tallyCreditors, { includeVoucherData: includeTallyData });
+  snapshot.styleImages = includeStyleImages ? buildPersistedStyleImageMap(sourceState) : {};
   snapshot.styles = (snapshot.styles || []).map((style) => {
     if (!/^data:image\//i.test(clean(style.image))) return style;
     return { ...style, image: storedImageRef(style.id) };
   });
+  return snapshot;
+}
+
+function compactTallyCreditorsSnapshot(config, options = {}) {
+  const includeVoucherData = Boolean(options.includeVoucherData);
+  const snapshot = {
+    ...clone(DEFAULTS.tallyCreditors),
+    ...(config || {})
+  };
+  snapshot.ledgers = includeVoucherData && Array.isArray(config?.ledgers) ? config.ledgers : [];
+  snapshot.vouchers = includeVoucherData && Array.isArray(config?.vouchers) ? config.vouchers : [];
   return snapshot;
 }
 
@@ -6366,23 +6496,35 @@ function buildPersistedStyleImageMap(sourceState = state) {
   return imageMap;
 }
 
-function loadLocalState() {
+async function loadLocalState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      hasPendingCloudChanges = false;
-      return clone(DEFAULTS);
+      return await loadStoredAppStateOrDefaults();
     }
     const parsed = JSON.parse(raw);
-    hasPendingCloudChanges = Boolean(parsed?.__pendingCloudChanges);
-    if (parsed && typeof parsed === "object") {
-      delete parsed.__pendingCloudChanges;
-    }
-    return { ...clone(DEFAULTS), ...parsed };
+    return hydrateLoadedState(parsed);
   } catch {
-    hasPendingCloudChanges = false;
-    return clone(DEFAULTS);
+    return await loadStoredAppStateOrDefaults();
   }
+}
+
+async function loadStoredAppStateOrDefaults() {
+  try {
+    const stored = await getStoredAppState();
+    if (stored) return hydrateLoadedState(stored);
+  } catch (error) {
+    console.warn("Could not read extended browser backup:", error);
+  }
+  hasPendingCloudChanges = false;
+  return clone(DEFAULTS);
+}
+
+function hydrateLoadedState(parsed) {
+  hasPendingCloudChanges = Boolean(parsed?.__pendingCloudChanges);
+  const value = parsed && typeof parsed === "object" ? clone(parsed) : {};
+  delete value.__pendingCloudChanges;
+  return { ...clone(DEFAULTS), ...value };
 }
 
 function hasMeaningfulState(sourceState = state) {
@@ -6407,7 +6549,7 @@ async function migrateStoredImageRefsToState() {
     if (!styleImageCache.has(styleId)) await putStoredStyleImage(styleId, cachedImage);
     changed = true;
   }
-  if (changed) saveLocalState();
+  if (changed) await saveLocalState();
 }
 
 async function migrateInlineStyleImages() {
@@ -6422,7 +6564,7 @@ async function migrateInlineStyleImages() {
     if (cloudEnabled()) {
       hasPendingCloudChanges = true;
     }
-    saveLocalState();
+    await saveLocalState();
     if (cloudEnabled()) {
       await syncStateToCloud();
     }
@@ -6550,29 +6692,64 @@ function inferImageExtensionFromDataUrl(dataUrl) {
 }
 
 function withStyleImageStore(mode, executor) {
-  return openStyleImageDb().then((db) => new Promise((resolve, reject) => {
-    const tx = db.transaction(STYLE_IMAGE_STORE, mode);
-    const store = tx.objectStore(STYLE_IMAGE_STORE);
-    tx.onerror = () => reject(tx.error || new Error("Image storage failed"));
+  return withStorageStore(STYLE_IMAGE_STORE, mode, executor);
+}
+
+function withAppStateStore(mode, executor) {
+  return withStorageStore(APP_STATE_STORE, mode, executor);
+}
+
+function withStorageStore(storeName, mode, executor) {
+  return openStorageDb().then((db) => new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, mode);
+    const store = tx.objectStore(storeName);
+    tx.onerror = () => reject(tx.error || new Error("Browser storage failed"));
     executor(store, resolve, reject);
   }));
 }
 
-function openStyleImageDb() {
+function openStorageDb() {
   return new Promise((resolve, reject) => {
     if (!window.indexedDB) {
-      reject(new Error("This browser does not support image storage."));
+      reject(new Error("This browser does not support extended browser storage."));
       return;
     }
-    const request = window.indexedDB.open(STYLE_IMAGE_DB_NAME, 1);
+    const request = window.indexedDB.open(STYLE_IMAGE_DB_NAME, STORAGE_DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STYLE_IMAGE_STORE)) {
         db.createObjectStore(STYLE_IMAGE_STORE, { keyPath: "id" });
       }
+      if (!db.objectStoreNames.contains(APP_STATE_STORE)) {
+        db.createObjectStore(APP_STATE_STORE, { keyPath: "id" });
+      }
     };
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("Could not open image storage"));
+    request.onerror = () => reject(request.error || new Error("Could not open browser storage"));
+  });
+}
+
+async function putStoredAppState(snapshot) {
+  await withAppStateStore("readwrite", (store, resolve, reject) => {
+    const request = store.put({ id: APP_STATE_RECORD_ID, snapshot });
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error || new Error("Could not save browser backup"));
+  });
+}
+
+async function getStoredAppState() {
+  return withAppStateStore("readonly", (store, resolve, reject) => {
+    const request = store.get(APP_STATE_RECORD_ID);
+    request.onsuccess = () => resolve(request.result?.snapshot || null);
+    request.onerror = () => reject(request.error || new Error("Could not load browser backup"));
+  });
+}
+
+async function removeStoredAppState() {
+  await withAppStateStore("readwrite", (store, resolve, reject) => {
+    const request = store.delete(APP_STATE_RECORD_ID);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error || new Error("Could not clear browser backup"));
   });
 }
 
