@@ -1,7 +1,11 @@
 window.APP_CONFIG = {
-  supabase: {
-    url: "https://YOUR-PROJECT.supabase.co",
-    anonKey: "YOUR_SUPABASE_ANON_KEY",
-    appId: "piece-rate-main"
+  firebase: {
+    apiKey: "YOUR_FIREBASE_API_KEY",
+    authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+    projectId: "YOUR_PROJECT_ID",
+    databaseURL: "https://YOUR_PROJECT_ID-default-rtdb.firebaseio.com",
+    storageBucket: "YOUR_PROJECT_ID.firebasestorage.app",
+    appId: "YOUR_FIREBASE_WEB_APP_ID",
+    cloudAppId: "piece-rate-main"
   }
 };

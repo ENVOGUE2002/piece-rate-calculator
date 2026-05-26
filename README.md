@@ -255,6 +255,18 @@ A working local browser app is included:
 5. Add acceptance and rejection size-wise.
 6. Check dashboard and reports for billing and reconciliation.
 
+## Product Engineering Integration
+
+This workspace now also includes a desktop Python module for style development and product engineering in [garment_erp](D:\New folder\Piece rate Calculator\garment_erp).
+
+Use the integration flow:
+
+1. Start the web ERP and maintain style master in StitchFlow.
+2. Open the `Product Engineering` tab in the web app.
+3. Download the style-development bridge JSON.
+4. Run [Launch Style Development Module.cmd](D:\New folder\Piece rate Calculator\Launch Style Development Module.cmd).
+5. Import the bridge JSON into the Python module with the command documented in [garment_erp/README.md](D:\New folder\Piece rate Calculator\garment_erp\README.md).
+
 ### Excel Upload
 
 You can fill the sample files in Microsoft Excel and save them as CSV, then upload them into the app.
@@ -397,35 +409,37 @@ For that next step, the app should be upgraded to a real web app with backend st
 
 - frontend: current UI or React
 - backend: Node.js / Express
-- database: PostgreSQL, Supabase, or Firebase
+- database: PostgreSQL or Firebase
 
-## Shared Cloud Data With Supabase
+## Shared Cloud Data With Firebase
 
-This folder now includes a simple shared-data mode using Supabase.
+This folder now includes a simple shared-data mode using Firebase Realtime Database and Firebase Storage.
 
 Files:
 
 - [config.js](D:\New folder\Piece rate Calculator - Copy\config.js)
 - [config.example.js](D:\New folder\Piece rate Calculator - Copy\config.example.js)
-- [supabase-schema.sql](D:\New folder\Piece rate Calculator - Copy\supabase-schema.sql)
 
 ### What It Does
 
 - keeps the current browser app and screens
-- stores one shared application state in Supabase
+- stores one shared application state in Firebase Realtime Database
 - lets multiple PCs load the same data
 - syncs new changes to the cloud after save
 - checks for newer cloud changes automatically
+- uploads style images to Firebase Storage when available
+- keeps image data inside the shared state as a fallback if Storage upload is unavailable
 
 ### Setup Steps
 
-1. Create a project in [Supabase](https://supabase.com/).
-2. Open the SQL editor.
-3. Run the SQL from [supabase-schema.sql](D:\New folder\Piece rate Calculator - Copy\supabase-schema.sql).
+1. Create a project in [Firebase](https://console.firebase.google.com/).
+2. Enable Realtime Database.
+3. Enable Storage.
 4. Open [config.js](D:\New folder\Piece rate Calculator - Copy\config.js).
-5. Paste your Supabase `Project URL`.
-6. Paste your Supabase `anon key`.
-7. Deploy the site again.
+5. Paste your Firebase web config values.
+6. Put your real Firebase web `appId` in `appId`.
+7. Keep `cloudAppId` as the shared dataset key unless you want a different shared app bucket.
+8. Deploy the site again.
 
 ### Important Note
 

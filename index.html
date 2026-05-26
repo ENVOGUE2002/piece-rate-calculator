@@ -30,6 +30,7 @@
         <button class="nav-link" data-tab="dispatch">Dispatch Entry</button>
         <button class="nav-link" data-tab="grnstatus">GRN Status</button>
         <button class="nav-link" data-tab="reports">Reports</button>
+        <button class="nav-link" data-tab="engineering">Product Engineering</button>
         <button class="nav-link" data-tab="washcare">Washcare</button>
       </nav>
       <div class="sidebar-card">
@@ -460,6 +461,59 @@
         </div>
       </section>
 
+      <section class="tab-panel" id="engineering">
+        <div class="panel-header"><div><p class="eyebrow">ERP Bridge</p><h2>Style Development & Product Engineering</h2></div></div>
+        <div class="stats-grid" id="productEngineeringStats"></div>
+        <div class="grid-two">
+          <section class="card">
+            <div class="section-title"><h3>Bridge to Desktop Module</h3></div>
+            <p>This section hands approved style master data from StitchFlow into the Python style development module for specs, BOM, marker planning, thread, operations, costing, and tech pack exports.</p>
+            <div class="action-row">
+              <button type="button" id="launchGarmentErpBtn">Launch Garment ERP Desktop Module</button>
+              <button type="button" id="syncErpBtn">Sync to Garment ERP</button>
+              <button type="button" id="exportStyleDevelopmentBridgeBtn">Download Style Engineering Bridge</button>
+              <a class="ghost file-label" href="garment_erp/README.md" target="_blank">Open Module README</a>
+            </div>
+            <label class="checkbox-row">
+              <input type="checkbox" id="autoSyncErpToggle">
+              <span>Auto-sync to Garment ERP after every style save</span>
+            </label>
+            <p class="field-hint" id="launchGarmentErpStatus">Click <strong>Launch Garment ERP Desktop Module</strong> to open the Python module. Use <strong>Sync to Garment ERP</strong> to push all current styles into the desktop database in one click (replaces the download + CLI dance).</p>
+            <div class="stack gap-sm">
+              <p class="field-hint">1. Download the bridge JSON from this screen.</p>
+              <p class="field-hint">2. Run `Launch Style Development Module.cmd` to open the Python module.</p>
+              <p class="field-hint">3. Import the exported JSON with the module importer command shown in the README.</p>
+            </div>
+            <pre class="field-hint">py -3 -m style_development.sample_data.import_piece_rate_export "path\to\stitchflow-style-development-bridge.json"</pre>
+            <div class="section-title"><h3>Import Approved Styles from ERP</h3></div>
+            <p>Once an approved style is pushed from the Costing tab of the desktop module, it writes <code>erp_styles_export.csv</code> into this project folder. Use the button below to load it back into StitchFlow.</p>
+            <div class="action-row">
+              <label class="file-label" for="erpStylesImportInput">Import from Garment ERP CSV</label>
+              <input type="file" id="erpStylesImportInput" accept=".csv" hidden>
+            </div>
+            <div id="productEngineeringSummary" class="empty-state">No style master bridge prepared yet.</div>
+          </section>
+          <section class="card">
+            <div class="section-title"><h3>Grouped Style Handoff</h3></div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Style</th>
+                    <th>Buyer</th>
+                    <th>Colours</th>
+                    <th>Order Qty</th>
+                    <th>Operations</th>
+                    <th>Image</th>
+                  </tr>
+                </thead>
+                <tbody id="productEngineeringTable"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </section>
+
       <section class="tab-panel" id="washcare">
         <div class="panel-header"><div><p class="eyebrow">Washcare</p><h2>Style Washcare Preview and Print</h2></div></div>
         <div class="grid-two">
@@ -556,6 +610,6 @@
       <button type="button" class="ghost remove-style-variant">Remove</button>
     </div>
   </template>
-  <script src="app.js?v=2026-04-21-1"></script>
+  <script src="app.js?v=2026-05-26-cloud-images-4"></script>
 </body>
 </html>

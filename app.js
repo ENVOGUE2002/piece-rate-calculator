@@ -180,6 +180,9 @@ const els = {
   pendingWorkflowTable: $("pendingWorkflowTable"),
   styleBillingTable: $("styleBillingTable"),
   workerBillingTable: $("workerBillingTable"),
+  productEngineeringStats: $("productEngineeringStats"),
+  productEngineeringSummary: $("productEngineeringSummary"),
+  productEngineeringTable: $("productEngineeringTable"),
   styleAmountReportTable: $("styleAmountReportTable"),
   reconciliationTable: $("reconciliationTable"),
   cuttingReportHead: $("cuttingReportHead"),
@@ -221,6 +224,12 @@ const els = {
   tallyBucketHead: $("tallyBucketHead"),
   tallyCurrentBucketHead: $("tallyCurrentBucketHead"),
   exportBtn: $("exportBtn"),
+  exportStyleDevelopmentBridgeBtn: $("exportStyleDevelopmentBridgeBtn"),
+  launchGarmentErpBtn: $("launchGarmentErpBtn"),
+  launchGarmentErpStatus: $("launchGarmentErpStatus"),
+  syncErpBtn: $("syncErpBtn"),
+  autoSyncErpToggle: $("autoSyncErpToggle"),
+  erpStylesImportInput: $("erpStylesImportInput"),
   clearOldCacheBtn: $("clearOldCacheBtn"),
   importInput: $("importInput"),
   styleImportInput: $("styleImportInput"),
@@ -271,6 +280,11 @@ async function init() {
   updateStorageModeUi();
   render();
   startCloudRefresh();
+  if (els.autoSyncErpToggle) {
+    els.autoSyncErpToggle.checked = loadAutoSyncErpPreference();
+    handleAutoSyncToggle();
+  }
+  checkForErpPickupOnBoot();
 }
 
 function bindTabs() {
@@ -438,6 +452,11 @@ function bindForms() {
   els.tallyCompany?.addEventListener("change", saveTallyPreferences);
   els.tallyCreditorsTable?.addEventListener("click", handleTallyCreditorTableClick);
   els.exportBtn.addEventListener("click", exportData);
+  els.exportStyleDevelopmentBridgeBtn?.addEventListener("click", exportStyleDevelopmentBridge);
+  els.launchGarmentErpBtn?.addEventListener("click", launchGarmentErp);
+  els.syncErpBtn?.addEventListener("click", () => syncToGarmentErp({ manual: true }));
+  els.autoSyncErpToggle?.addEventListener("change", handleAutoSyncToggle);
+  els.erpStylesImportInput?.addEventListener("change", importErpStylesCsv);
   els.clearOldCacheBtn?.addEventListener("click", clearOldBrowserCache);
   els.importInput.addEventListener("change", importData);
   els.styleImportInput.addEventListener("change", importStylesCsv);
@@ -563,6 +582,7 @@ async function saveStyle(e) {
 
   resetStyleFormState();
   await persistState();
+  await maybeAutoSyncToErp("style-save");
 }
 
 async function saveCutting(e) {
@@ -783,6 +803,7 @@ function render() {
   renderGrnStatus();
   renderWashcare();
   renderDashboard();
+  renderProductEngineering();
   renderReports();
   renderTallyForm();
 }
@@ -1082,6 +1103,45 @@ function renderDashboard() {
   els.workerBillingTable.innerHTML = rowsOrEmpty(workers.map((r) => `
     <tr><td>${esc(r.workerName)}</td><td>${esc(r.operationName)}</td><td>${fmtInt(r.quantity)}</td><td>Rs ${fmt(r.amount)}</td></tr>`), 4, "No worker billing yet.");
   renderPendingWorkflow();
+}
+
+function renderProductEngineering() {
+  const groupedStyles = buildStyleDevelopmentBridge().styles;
+  if (els.productEngineeringStats) {
+    const imageCount = groupedStyles.reduce((sum, style) => sum + style.images.length, 0);
+    const operationCount = groupedStyles.reduce((sum, style) => sum + style.operations.length, 0);
+    const orderQty = groupedStyles.reduce((sum, style) => sum + num(style.order_qty_total), 0);
+    els.productEngineeringStats.innerHTML = [
+      ["Bridge Styles", groupedStyles.length],
+      ["Total Colours", groupedStyles.reduce((sum, style) => sum + style.colors.length, 0)],
+      ["Total Order Qty", fmtInt(orderQty)],
+      ["Images Ready", imageCount],
+      ["Operations Ready", operationCount]
+    ].map(([label, value]) => `<div class="stat-card"><p>${label}</p><strong>${esc(String(value))}</strong></div>`).join("");
+  }
+
+  if (els.productEngineeringSummary) {
+    if (!groupedStyles.length) {
+      els.productEngineeringSummary.classList.add("empty-state");
+      els.productEngineeringSummary.textContent = "Create at least one style in StitchFlow before exporting to the Product Engineering desktop module.";
+    } else {
+      els.productEngineeringSummary.classList.remove("empty-state");
+      els.productEngineeringSummary.textContent = `${fmtInt(groupedStyles.length)} grouped style record(s) are ready to hand off to the desktop module. Export the bridge JSON, then import it into the Python module.`;
+    }
+  }
+
+  if (els.productEngineeringTable) {
+    const rows = groupedStyles.map((style) => `
+      <tr>
+        <td>${esc(style.style_no)}</td>
+        <td>${esc(style.buyer || "-")}</td>
+        <td>${esc(style.colors.join(", ") || "-")}</td>
+        <td>${fmtInt(style.order_qty_total || 0)}</td>
+        <td>${fmtInt(style.operations.length)}</td>
+        <td>${style.images.length ? "Yes" : "No"}</td>
+      </tr>`);
+    els.productEngineeringTable.innerHTML = rowsOrEmpty(rows, 6, "No grouped style handoff data available yet.");
+  }
 }
 
 function renderReports() {
@@ -1928,16 +1988,16 @@ async function ensureStyleImageAvailableForExport(source = {}) {
   if (!resolved || resolved.startsWith("data:image/")) return resolved;
   const targetStyleId = clean(match.styleId || source?.styleId || source?.id);
   let dataUrl = "";
-  try {
-    const response = await fetch(resolved);
-    if (response.ok) {
-      dataUrl = await blobToDataUrl(await response.blob());
+  if (isFirebaseImageUrl(resolved)) {
+    dataUrl = await fetchViaImageProxy(resolved);
+    if (!dataUrl) dataUrl = await fetchAsDataUrl(resolved);
+    if (!dataUrl) dataUrl = await imageUrlToDataUrl(resolved);
+  } else {
+    dataUrl = await fetchAsDataUrl(resolved);
+    if (!dataUrl) dataUrl = await imageUrlToDataUrl(resolved);
+    if (!dataUrl && isRemoteImageUrl(resolved)) {
+      dataUrl = await fetchViaImageProxy(resolved);
     }
-  } catch {
-    dataUrl = "";
-  }
-  if (!dataUrl) {
-    dataUrl = await imageUrlToDataUrl(resolved);
   }
   if (targetStyleId && /^data:image\//i.test(clean(dataUrl))) {
     await cacheStyleImageData(targetStyleId, dataUrl);
@@ -2428,9 +2488,10 @@ function cuttingReportRows(reportDate = "") {
     .sort((a, b) => clean(b.date).localeCompare(clean(a.date)))
     .map((entry) => {
       const style = byId(entry.styleId);
-        return {
-          date: entry.date,
-          image: styleImageSrc(style),
+      return {
+        styleId: style?.id || clean(entry.styleId),
+        date: entry.date,
+        image: styleImageSrc(style),
         styleNumber: style?.styleNumber || "-",
         color: style?.color || "",
         service: entry.service || "",
@@ -2460,6 +2521,7 @@ function dispatchReportRows(reportDate = "") {
       if (!cutQty && !makeQty && !dispatchQty) return;
       const amount = (makeQty * num(style.cmtRate)) + ((makeQty * num(style.cmtRate) * num(style.serviceChargePct)) / 100);
       rows.push({
+        styleId: style.id,
         styleNumber: style.styleNumber,
         color: style.color,
         image: styleImageSrc(style),
@@ -2725,6 +2787,247 @@ function exportData() {
   a.download = `piece-rate-data-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function exportStyleDevelopmentBridge() {
+  const payload = buildStyleDevelopmentBridge();
+  downloadTextFile(
+    `stitchflow-style-development-bridge-${new Date().toISOString().slice(0, 10)}.json`,
+    JSON.stringify(payload, null, 2),
+    "application/json"
+  );
+}
+
+async function launchGarmentErp() {
+  const status = els.launchGarmentErpStatus;
+  const button = els.launchGarmentErpBtn;
+  if (button) button.disabled = true;
+  if (status) status.textContent = "Launching Garment ERP desktop module…";
+  try {
+    const response = await fetch("/launch-garment-erp", { method: "POST" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+      const detail = data.error || data.details || `HTTP ${response.status}`;
+      throw new Error(detail);
+    }
+    if (status) {
+      status.textContent = `Garment ERP launched (pid ${data.pid}). The desktop window should appear shortly.`;
+    }
+  } catch (error) {
+    console.error("Could not launch Garment ERP:", error);
+    if (status) {
+      status.textContent =
+        "Could not launch the Garment ERP from this dashboard. Make sure the StitchFlow server (server.js) is running, or use the Launch Style Development Module.cmd script in the project folder.";
+    }
+    alert(`Could not launch the Garment ERP.\n${clean(error?.message) || ""}`);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+const AUTO_SYNC_ERP_KEY = "stitchflow.autoSyncErp";
+
+function loadAutoSyncErpPreference() {
+  try {
+    const stored = localStorage.getItem(AUTO_SYNC_ERP_KEY);
+    return stored === "1";
+  } catch {
+    return false;
+  }
+}
+
+function handleAutoSyncToggle() {
+  const enabled = Boolean(els.autoSyncErpToggle?.checked);
+  try {
+    localStorage.setItem(AUTO_SYNC_ERP_KEY, enabled ? "1" : "0");
+  } catch {}
+  if (els.launchGarmentErpStatus) {
+    els.launchGarmentErpStatus.textContent = enabled
+      ? "Auto-sync is ON. Every saved style will be pushed to the Garment ERP automatically."
+      : "Auto-sync is OFF. Use the 'Sync to Garment ERP' button to push styles manually.";
+  }
+}
+
+async function syncToGarmentErp({ manual = false } = {}) {
+  const payload = buildStyleDevelopmentBridge();
+  const styles = Array.isArray(payload?.styles) ? payload.styles : [];
+  if (!styles.length) {
+    if (manual) alert("No styles to sync yet. Create a style first.");
+    return { ok: false, reason: "no-styles" };
+  }
+
+  const button = els.syncErpBtn;
+  const status = els.launchGarmentErpStatus;
+  if (button) button.disabled = true;
+  if (status) status.textContent = `Syncing ${styles.length} style(s) to the Garment ERP…`;
+
+  try {
+    const response = await fetch("/sync-erp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+      const detail = data.error || data.details || `HTTP ${response.status}`;
+      throw new Error(detail);
+    }
+    // Surface per-image stats so silent zero-image syncs stop being invisible.
+    const summary = data.summary || null;
+    const imagePart = summary
+      ? ` Images saved: ${summary.images_saved}/${summary.images_seen}` +
+        (summary.images_skipped_bad ? ` (${summary.images_skipped_bad} could not be decoded)` : "") +
+        (summary.images_skipped_empty ? ` (${summary.images_skipped_empty} styles had no image)` : "")
+      : "";
+    if (status) {
+      status.textContent = `Synced ${data.synced_styles} style(s) to the Garment ERP at ${new Date().toLocaleTimeString()}.${imagePart}`;
+    }
+    if (manual) {
+      const detailLine = summary
+        ? `\nImages saved: ${summary.images_saved} of ${summary.images_seen}` +
+          (summary.images_skipped_empty ? `\nStyles without an image: ${summary.images_skipped_empty}` : "") +
+          (summary.images_skipped_bad ? `\nImages that failed to decode: ${summary.images_skipped_bad}` : "") +
+          `\nStored under: ${summary.style_images_dir}`
+        : "";
+      alert(`Synced ${data.synced_styles} style(s) to the Garment ERP.${detailLine}`);
+    }
+    return { ok: true, synced: data.synced_styles, summary };
+  } catch (error) {
+    console.error("Sync to ERP failed:", error);
+    if (status) {
+      status.textContent = `Could not sync to Garment ERP. ${clean(error?.message) || ""} Make sure the StitchFlow server is running and the desktop module's dependencies are installed.`;
+    }
+    if (manual) alert(`Could not sync to Garment ERP.\n${clean(error?.message) || ""}`);
+    return { ok: false, reason: error?.message };
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function maybeAutoSyncToErp(reason = "manual") {
+  if (!els.autoSyncErpToggle?.checked) return;
+  // Background sync — don't block on result. Errors surface in the status line.
+  syncToGarmentErp({ manual: false }).catch((error) => {
+    console.error(`Auto-sync (${reason}) failed:`, error);
+  });
+}
+
+async function checkForErpPickupOnBoot() {
+  try {
+    const response = await fetch("/erp-pickup");
+    if (!response.ok) return;
+    const data = await response.json().catch(() => ({}));
+    if (!data?.ok || !data.fresh || !Array.isArray(data.rows) || !data.rows.length) {
+      return;
+    }
+    const summary = await importStyleRows(data.rows, new Map(), {
+      skipExisting: false
+    });
+    await persistState();
+    if (els.launchGarmentErpStatus) {
+      els.launchGarmentErpStatus.textContent =
+        `Imported ${summary.created + summary.updated} approved style(s) from the Garment ERP automatically.`;
+    }
+    setSyncStatus(
+      `Garment ERP pickup: created ${summary.created}, updated ${summary.updated}.`
+    );
+  } catch (error) {
+    console.warn("ERP auto-pickup skipped:", error?.message || error);
+  }
+}
+
+async function importErpStylesCsv(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  try {
+    const rows = await parseStyleImportFile(file);
+    if (!rows.length) {
+      alert("The selected ERP file did not contain any style rows.");
+      return;
+    }
+    const summary = await importStyleRows(rows, new Map(), {
+      skipExisting: Boolean(els.skipExistingStylesToggle?.checked)
+    });
+    await persistState();
+    alert(`Garment ERP import finished.\nCreated: ${summary.created}\nUpdated: ${summary.updated}\nSkipped: ${summary.skipped}`);
+  } catch (error) {
+    console.error("Garment ERP import failed:", error);
+    alert(`Could not import the Garment ERP CSV.${clean(error?.message) ? `\n${clean(error.message)}` : ""}`);
+  } finally {
+    els.erpStylesImportInput.value = "";
+  }
+}
+
+function buildStyleDevelopmentBridge() {
+  const groups = new Map();
+  state.styles.forEach((style) => {
+    const styleNumber = clean(style.styleNumber);
+    if (!styleNumber) return;
+
+    const key = normalizeStyleLookupValue(styleNumber);
+    const existing = groups.get(key) || {
+      source: "stitchflow-piece-rate",
+      source_style_ids: [],
+      style_id: `PR-${styleNumber}`.replace(/[^a-z0-9_-]/gi, "-").slice(0, 50),
+      style_no: styleNumber,
+      buyer: clean(style.buyerName),
+      season: "",
+      category: clean(style.styleName) || "Imported Style",
+      description: clean(style.notes) || clean(style.styleName),
+      fabric_type: "",
+      fabric_width: "",
+      order_qty_total: 0,
+      colors: [],
+      operations: [],
+      images: [],
+      patterns: []
+    };
+
+    existing.source_style_ids.push(style.id);
+    existing.order_qty_total += num(style.orderQty);
+    if (clean(style.color) && !existing.colors.includes(clean(style.color))) {
+      existing.colors.push(clean(style.color));
+    }
+    if (!existing.buyer) existing.buyer = clean(style.buyerName);
+    if (!existing.description) existing.description = clean(style.notes) || clean(style.styleName);
+
+    const image = styleImageSrc(style);
+    if (image) {
+      const fileName = `${styleNumber}-${clean(style.color || "image").replace(/[^a-z0-9_-]/gi, "-") || "image"}.png`;
+      // Cloud mode returns a Firebase Storage HTTPS URL, not a data URL.
+      // Send each form in its own field so the Python importer can grab
+      // whichever it actually got — data URLs go straight to disk, plain
+      // URLs get downloaded server-side (no CORS to fight).
+      const entry = image.startsWith("data:image/")
+        ? { file_name: fileName, data_url: image }
+        : { file_name: fileName, image_url: image };
+      const dedupeKey = entry.data_url || entry.image_url;
+      if (!existing.images.some((item) => (item.data_url || item.image_url) === dedupeKey)) {
+        existing.images.push(entry);
+      }
+    }
+
+    (Array.isArray(style.operations) ? style.operations : []).forEach((operation) => {
+      if (!clean(operation?.operationName)) return;
+      if (existing.operations.some((item) => normalizeStyleLookupValue(item.operation_name) === normalizeStyleLookupValue(operation.operationName))) return;
+      existing.operations.push({
+        operation_name: clean(operation.operationName),
+        machine_type: "",
+        sam: "",
+        operator_rate: num(operation.rate),
+        operation_cost: ""
+      });
+    });
+
+    groups.set(key, existing);
+  });
+
+  return {
+    export_version: 1,
+    exported_at: new Date().toISOString(),
+    source_app: "StitchFlow Piece Rate ERP",
+    styles: [...groups.values()].sort((a, b) => a.style_no.localeCompare(b.style_no))
+  };
 }
 
 async function clearOldBrowserCache() {
@@ -5528,6 +5831,8 @@ async function downloadBillingPdf() {
     const imageColumn = columns.find((column) => column.key === "image");
     const rowHeight = 16;
     const preparedImageMap = new Map();
+    const fetchStats = { attempted: 0, succeeded: 0 };
+    let proxyAvailable = null;
     if (imageColumn) {
       const uniqueRows = [];
       const seenImageKeys = new Set();
@@ -5537,16 +5842,41 @@ async function downloadBillingPdf() {
         seenImageKeys.add(key);
         uniqueRows.push(row);
       });
-      const preparedEntries = await Promise.all(uniqueRows.map(async (row) => {
+      // Sequential prep — loading dozens of multi-MB photos through canvas
+      // in parallel was OOM'ing the browser and silently dropping every row.
+      for (const row of uniqueRows) {
+        const key = buildPdfImageCacheKey(row);
+        if (!key) continue;
+        fetchStats.attempted += 1;
         const imageData = await getPdfSafeImageData(row);
+        // If the very first remote attempt failed and the row needs a
+        // Firebase fetch, probe the proxy endpoint so we can tell the
+        // operator that the Node server needs restarting.
+        if (!imageData && proxyAvailable === null) {
+          const candidate = clean(resolveReportImageSource(row));
+          if (isFirebaseImageUrl(candidate)) {
+            proxyAvailable = await probeImageProxy();
+          }
+        }
+        if (imageData) fetchStats.succeeded += 1;
         const fit = imageData
           ? await calculateImageFit(imageColumn.width - 2, rowHeight - 2, imageData)
           : null;
-        return [buildPdfImageCacheKey(row), { imageData, fit }];
-      }));
-      preparedEntries.forEach(([key, value]) => {
-        if (key) preparedImageMap.set(key, value);
-      });
+        preparedImageMap.set(key, { imageData, fit });
+      }
+    }
+    if (fetchStats.attempted > 0 && fetchStats.succeeded === 0 && proxyAvailable === false) {
+      const isLocal = /^(localhost|127\.|0\.0\.0\.0)/.test(window.location.hostname);
+      alert(
+        "Couldn't download any images for the PDF.\n\n" +
+        (isLocal
+          ? "The Node server is missing the /proxy-image route. " +
+            "Close and re-run Launch Piece Rate Calculator.cmd to restart it, then try again."
+          : "Firebase Storage isn't sending CORS headers and this deployment has " +
+            "no /proxy-image endpoint. Either:\n" +
+            "  1. Configure CORS on the Firebase Storage bucket (gsutil cors set), or\n" +
+            "  2. Open the report from the local Launch Piece Rate Calculator.cmd app.")
+      );
     }
 
     let y = top;
@@ -5598,10 +5928,20 @@ async function downloadBillingPdf() {
       for (const column of columns) {
         pdf.rect(currentX, y, column.width, rowHeight);
         if (column.key === "image") {
-          const prepared = preparedImageMap.get(buildPdfImageCacheKey(row)) || { imageData: "", fit: null };
+          const cacheKey = buildPdfImageCacheKey(row);
+          const prepared = preparedImageMap.get(cacheKey) || { imageData: "", fit: null };
           if (prepared.imageData && prepared.fit) {
             const { imageData, fit } = prepared;
-            pdf.addImage(imageData, "PNG", currentX + 1 + fit.xOffset, y + 1 + fit.yOffset, fit.width, fit.height);
+            pdf.addImage(
+              imageData,
+              pdfImageFormat(imageData),
+              currentX + 1 + fit.xOffset,
+              y + 1 + fit.yOffset,
+              fit.width,
+              fit.height,
+              cacheKey || undefined,
+              "FAST"
+            );
           } else {
             pdf.text("-", currentX + (column.width / 2), y + 9, { align: "center" });
           }
@@ -5837,7 +6177,7 @@ async function buildInternalChallanPdfPage(pdf, row, serialNumber) {
   drawPdfFieldBox(pdf, rightColX, 64, contentWidth - leftColWidth - 4, 10, "Total Qty", fmtInt(row.totalQty || 0));
   drawPdfFieldBox(pdf, margin, 74, contentWidth, 12, "Remarks", row.remarks || "-");
 
-  const imageBottomY = await drawChallanImageBox(pdf, row.image, rightColX, 88, contentWidth - leftColWidth - 4, 36);
+  const imageBottomY = await drawChallanImageBox(pdf, row, rightColX, 88, contentWidth - leftColWidth - 4, 36);
 
   const tableTop = 88;
   const tableWidth = leftColWidth;
@@ -5901,7 +6241,16 @@ async function drawChallanImageBox(pdf, source, x, y, width, height) {
   }
 
   const fit = await calculateImageFit(width - 4, height - 8, imageData);
-  pdf.addImage(imageData, "PNG", x + 2 + fit.xOffset, y + 6 + fit.yOffset, fit.width, fit.height);
+  pdf.addImage(
+    imageData,
+    pdfImageFormat(imageData),
+    x + 2 + fit.xOffset,
+    y + 6 + fit.yOffset,
+    fit.width,
+    fit.height,
+    buildPdfImageCacheKey(source) || undefined,
+    "FAST"
+  );
   return y + height;
 }
 
@@ -5917,32 +6266,49 @@ async function getPdfSafeImageData(source) {
   })();
   if (cacheKey) pdfImageCache.set(cacheKey, pending);
   const result = await pending;
-  if (cacheKey) pdfImageCache.set(cacheKey, Promise.resolve(result));
+  if (cacheKey) {
+    // Only cache successes. Caching "" would make a single failed
+    // attempt (e.g. before the Node server was restarted) sticky for
+    // the rest of the session — retrying the export wouldn't help.
+    if (result) pdfImageCache.set(cacheKey, Promise.resolve(result));
+    else pdfImageCache.delete(cacheKey);
+  }
   return result;
 }
 
-function rasterizeImageDataForPdf(imageData) {
+function rasterizeImageDataForPdf(imageData, maxPx = 400) {
   return new Promise((resolve) => {
     const image = new Image();
     image.onload = () => {
       try {
+        const srcW = image.naturalWidth || 1;
+        const srcH = image.naturalHeight || 1;
+        const scale = Math.min(1, maxPx / Math.max(srcW, srcH));
         const canvas = document.createElement("canvas");
-        canvas.width = image.naturalWidth || 1;
-        canvas.height = image.naturalHeight || 1;
+        canvas.width = Math.max(1, Math.round(srcW * scale));
+        canvas.height = Math.max(1, Math.round(srcH * scale));
         const ctx = canvas.getContext("2d");
         if (!ctx) {
-          resolve(/^data:image\/png/i.test(imageData) ? imageData : "");
+          resolve(imageData);
           return;
         }
-        ctx.drawImage(image, 0, 0);
-        resolve(canvas.toDataURL("image/png"));
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        // JPEG keeps photo cells tiny; PDF will hold dozens without choking.
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
       } catch {
-        resolve(/^data:image\/png/i.test(imageData) ? imageData : "");
+        resolve(imageData);
       }
     };
-    image.onerror = () => resolve(/^data:image\/png/i.test(imageData) ? imageData : "");
+    image.onerror = () => resolve("");
     image.src = imageData;
   });
+}
+
+function pdfImageFormat(imageData) {
+  if (typeof imageData !== "string") return "JPEG";
+  if (/^data:image\/png/i.test(imageData)) return "PNG";
+  if (/^data:image\/webp/i.test(imageData)) return "WEBP";
+  return "JPEG";
 }
 
 async function calculateImageFit(maxWidth, maxHeight, imageData) {
@@ -6018,18 +6384,98 @@ async function imageSourceToBase64(source) {
     const ensured = await ensureStyleImageAvailableForExport(sourceObject);
     if (ensured) return ensured;
   }
+  // Firebase Storage URLs are inconsistent: some buckets have CORS set
+  // (direct fetch works), most don't (we need the /proxy-image route on
+  // our Node server). Try the local proxy first when running against the
+  // Node launcher; fall through to direct fetch + crossOrigin canvas so
+  // static deployments (GitHub Pages / Netlify / Vercel) still work as
+  // long as the bucket has CORS configured.
+  let dataUrl = "";
+  if (isFirebaseImageUrl(value)) {
+    dataUrl = await fetchViaImageProxy(value);
+    if (!dataUrl) dataUrl = await fetchAsDataUrl(value);
+    if (!dataUrl) dataUrl = await imageUrlToDataUrl(value);
+  } else {
+    dataUrl = await fetchAsDataUrl(value);
+    if (!dataUrl) dataUrl = await imageUrlToDataUrl(value);
+    if (!dataUrl && isRemoteImageUrl(value)) {
+      dataUrl = await fetchViaImageProxy(value);
+    }
+  }
+  if (dataUrl) {
+    await cacheStyleImageData(cacheMatch.styleId, dataUrl);
+  }
+  return dataUrl;
+}
+
+function isFirebaseImageUrl(value) {
+  const url = clean(value);
+  return /^https?:\/\/(?:[^/]+\.)?(firebasestorage\.googleapis\.com|storage\.googleapis\.com|firebasestorage\.app)\//i.test(url);
+}
+
+async function probeImageProxy() {
+  // GET (not HEAD) the endpoint with a bogus host so the route returns a
+  // controlled error if it exists. If it falls through to the static
+  // handler, the response is index.html (text/html) and we know the
+  // server is the old build.
   try {
-    const response = await fetch(value);
+    const response = await fetch("/proxy-image?url=" + encodeURIComponent("https://firebasestorage.googleapis.com/__probe"));
+    const ct = (response.headers.get("content-type") || "").toLowerCase();
+    if (ct.includes("application/json")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function isRemoteImageUrl(value) {
+  return /^https?:\/\//i.test(clean(value));
+}
+
+async function fetchAsDataUrl(url) {
+  try {
+    const response = await fetch(url);
     if (!response.ok) return "";
     const blob = await response.blob();
-    const dataUrl = await blobToDataUrl(blob);
-    await cacheStyleImageData(cacheMatch.styleId, dataUrl);
-    return dataUrl;
+    if (!isImageBlob(blob)) return "";
+    return await blobToDataUrl(blob);
   } catch {
-    const dataUrl = await imageUrlToDataUrl(value);
-    await cacheStyleImageData(cacheMatch.styleId, dataUrl);
-    return dataUrl;
+    return "";
   }
+}
+
+async function fetchViaImageProxy(url) {
+  try {
+    const proxied = `/proxy-image?url=${encodeURIComponent(url)}`;
+    const response = await fetch(proxied);
+    if (!response.ok) {
+      console.warn(`[proxy-image] HTTP ${response.status} for ${url}. ` +
+        `Restart the Node server (Launch Piece Rate Calculator.cmd) so the /proxy-image route is registered.`);
+      return "";
+    }
+    const blob = await response.blob();
+    if (!isImageBlob(blob)) {
+      // Server route is missing — falling through to static file handler
+      // serves index.html as text/html. Tell the operator clearly instead
+      // of silently embedding HTML bytes into the PDF.
+      console.warn(`[proxy-image] non-image response (${blob.type}) for ${url}. ` +
+        `The Node server is running an old version — restart it.`);
+      return "";
+    }
+    return await blobToDataUrl(blob);
+  } catch (error) {
+    console.warn(`[proxy-image] fetch failed for ${url}:`, error);
+    return "";
+  }
+}
+
+function isImageBlob(blob) {
+  if (!blob || typeof blob.type !== "string") return false;
+  const type = blob.type.toLowerCase();
+  // Some endpoints (or the static fallback) return an empty content-type;
+  // treat that as "unknown but probably not an image" so we don't dump
+  // HTML bytes into a PDF cell.
+  return type.startsWith("image/");
 }
 
 function blobToDataUrl(blob) {
